@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Futures Trading Game</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Settings / start overlay (also shown on Restart) -->
+  <div id="settings-overlay" class="overlay">
+    <div class="join-box">
+      <h1>📈 Futures Trading Game</h1>
+      <p class="sub">Trade a contract whose value is a secret arithmetic result of the drawn assets.</p>
+
+      <label class="field-label" for="name-input">Trader name</label>
+      <input id="name-input" type="text" placeholder="Your trader name" maxlength="20" />
+
+      <label class="field-label">Asset class</label>
+      <div id="asset-class-group" class="seg-group"></div>
+
+      <label class="field-label" for="num-assets">
+        Number of assets: <b id="num-assets-val">5</b>
+        <span class="muted" id="num-assets-unit"></span>
+      </label>
+      <input id="num-assets" type="range" min="2" max="13" value="5" />
+
+      <label class="field-label" for="num-rounds">
+        Number of rounds: <b id="num-rounds-val">5</b>
+      </label>
+      <input id="num-rounds" type="range" min="1" max="20" value="5" />
+      <p class="hint-text" id="rounds-note"></p>
+
+      <button id="start-btn">Start Game</button>
+      <p class="hint-text">Open this page in multiple tabs / on other devices on your network to play together. Starting applies these settings for everyone.</p>
+    </div>
+  </div>
+
+  <header>
+    <div class="brand">📈 Futures Trading Game</div>
+    <div class="controls">
+      <button id="next-round-btn" class="btn-primary">Next Round ▶</button>
+      <button id="restart-btn" class="btn-secondary">↻ Restart Game</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Left column: contract + underlying assets -->
+    <section class="panel contract-panel">
+      <h2>The Contract</h2>
+      <div id="contract-name" class="contract-name">—</div>
+      <div id="contract-desc" class="contract-desc"></div>
+
+      <div class="round-status">
+        <span id="round-label">Round 0</span>
+        <div class="progress"><div id="progress-bar" class="progress-bar"></div></div>
+      </div>
+
+      <h3>Revealed Underlying Assets</h3>
+      <div id="assets" class="assets"></div>
+
+      <div id="settlement-box" class="settlement-box hidden">
+        <div class="settlement-label">FINAL SETTLEMENT</div>
+        <div id="settlement-value" class="settlement-value">—</div>
+      </div>
+    </section>
+
+    <!-- Middle column: hints + trade ticket -->
+    <section class="panel">
+      <h2>Your Hints <span class="muted">(click to reveal / hide)</span></h2>
+      <div id="hints" class="hints"></div>
+
+      <h2 style="margin-top:24px;">Trade Ticket</h2>
+      <div class="ticket">
+        <label>Qty
+          <input id="qty" type="number" min="1" max="100" value="1" />
+        </label>
+        <label>Price
+          <input id="price" type="number" min="0" step="0.5" value="0" />
+        </label>
+        <div class="ticket-buttons">
+          <button id="buy-btn" class="btn-buy">BUY</button>
+          <button id="sell-btn" class="btn-sell">SELL</button>
+        </div>
+      </div>
+      <div id="trade-msg" class="trade-msg"></div>
+      <div class="you-stats">
+        <span>Cash: <b id="your-cash">—</b></span>
+        <span>Position: <b id="your-pos">—</b></span>
+        <span>PnL: <b id="your-pnl">—</b></span>
+      </div>
+    </section>
+
+    <!-- Right column: players + trade tape -->
+    <section class="panel">
+      <h2>Traders</h2>
+      <table class="players">
+        <thead><tr><th>Name</th><th>Cash</th><th>Pos</th><th>PnL</th></tr></thead>
+        <tbody id="players-body"></tbody>
+      </table>
+
+      <h2 style="margin-top:24px;">Trade Tape <span class="muted">last: <b id="last-price">—</b></span></h2>
+      <div id="tape" class="tape"></div>
+    </section>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
