@@ -128,6 +128,7 @@ function applySettings() {
     numRounds: parseInt($('num-rounds').value, 10),
     marketMaking: $('mm-mode').checked,
   });
+  $('settings-overlay').classList.add('hidden');
 }
 
 socket.on('gameStarted', () => { $('settings-overlay').classList.add('hidden'); });
