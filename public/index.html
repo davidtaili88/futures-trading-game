@@ -34,8 +34,31 @@
       <input id="num-rounds" type="range" min="1" max="20" value="5" />
       <p class="hint-text" id="rounds-note"></p>
 
+      <label class="field-label">Game mode</label>
+      <div class="toggle-row">
+        <input type="checkbox" id="mm-mode" />
+        <label for="mm-mode" class="toggle-label">
+          <span class="toggle-title">Market Making Mode</span>
+          <span class="toggle-desc">Before each round, players bid a spread margin. The tightest quote wins the right to make the market — all others trade at their bid/ask.</span>
+        </label>
+      </div>
+
       <button id="start-btn">Start Game</button>
       <p class="hint-text">Open this page in multiple tabs / on other devices on your network to play together. Starting applies these settings for everyone.</p>
+    </div>
+  </div>
+
+  <!-- Market making bid overlay -->
+  <div id="bid-overlay" class="overlay hidden">
+    <div class="bid-box">
+      <h2>📊 Market Making Bid</h2>
+      <p class="bid-sub">Enter the spread margin you're willing to quote.<br>Lowest margin wins — you'll quote <b>mid ± margin/2</b>.</p>
+      <div class="bid-input-row">
+        <input id="bid-input" type="number" min="0.5" step="0.5" placeholder="e.g. 2" />
+        <button id="bid-submit-btn">Submit Bid</button>
+      </div>
+      <div id="bid-status" class="bid-status"></div>
+      <div id="bid-waiting" class="bid-waiting hidden">Waiting for other players…</div>
     </div>
   </div>
 
@@ -72,6 +95,8 @@
     <section class="panel">
       <h2>Your Hints <span class="muted">(click to reveal / hide)</span></h2>
       <div id="hints" class="hints"></div>
+
+      <div id="mm-banner" class="mm-banner hidden"></div>
 
       <h2 style="margin-top:24px;">Trade Ticket</h2>
       <div class="ticket">

@@ -207,4 +207,66 @@ main {
 .tape-row .sell { color: var(--red); }
 .tape-row .tt { color: var(--muted); }
 
+/* ---------- Market making toggle ---------- */
+.toggle-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  background: var(--panel2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px 14px; text-align: left;
+  margin-bottom: 4px; cursor: pointer;
+}
+.toggle-row input[type="checkbox"] {
+  width: 18px; height: 18px; margin: 2px 0 0; flex-shrink: 0;
+  accent-color: var(--accent); cursor: pointer;
+}
+.toggle-label { cursor: pointer; }
+.toggle-title { display: block; font-size: 14px; font-weight: 600; color: var(--text); }
+.toggle-desc { display: block; font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.4; }
+
+/* ---------- Bid overlay ---------- */
+.bid-box {
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 14px;
+  padding: 40px;
+  width: min(420px, 90vw);
+  text-align: center;
+}
+.bid-box h2 { margin: 0 0 10px; font-size: 22px; }
+.bid-sub { color: var(--muted); font-size: 14px; margin: 0 0 24px; line-height: 1.5; }
+.bid-input-row { display: flex; gap: 10px; justify-content: center; }
+.bid-input-row input {
+  width: 120px; padding: 12px; font-size: 18px; text-align: center;
+  background: var(--panel2); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text);
+}
+.bid-input-row button {
+  padding: 12px 20px; font-size: 15px; font-weight: 700;
+  background: var(--accent); color: #fff; border: none;
+  border-radius: 8px; cursor: pointer; width: auto;
+}
+.bid-input-row button:disabled { opacity: 0.45; cursor: not-allowed; }
+.bid-status { margin-top: 14px; font-size: 13px; color: var(--gold); min-height: 18px; }
+.bid-waiting { margin-top: 8px; font-size: 13px; color: var(--muted); }
+
+/* ---------- MM banner ---------- */
+.mm-banner {
+  border-radius: 8px; padding: 10px 14px;
+  font-size: 13px; margin-bottom: 14px; line-height: 1.5;
+}
+.mm-banner.mm-maker {
+  background: rgba(216,163,59,0.12); border: 1px solid var(--gold); color: var(--gold);
+}
+.mm-banner.mm-taker {
+  background: rgba(47,129,247,0.10); border: 1px solid var(--accent); color: var(--text);
+}
+.bid-price { color: var(--red); }
+.ask-price { color: var(--green); }
+
+/* ---------- MM tag badge ---------- */
+.mm-tag {
+  display: inline-block; font-size: 10px; font-weight: 700;
+  background: var(--gold); color: #000;
+  border-radius: 3px; padding: 1px 4px; margin-left: 4px; vertical-align: middle;
+}
+
 .hidden { display: none !important; }
