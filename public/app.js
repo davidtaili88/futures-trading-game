@@ -90,8 +90,18 @@ $('name-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') star
 
 function startGame() {
   const name = $('name-input').value.trim();
-  if (!hasJoined) { socket.emit('join', name); hasJoined = true; }
-  else if (name) socket.emit('rename', name);
+  if (!hasJoined) {
+    socket.emit('join', name);
+    hasJoined = true;
+    // Wait for server to confirm join before applying settings.
+    socket.once('joined', () => applySettings());
+  } else {
+    if (name) socket.emit('rename', name);
+    applySettings();
+  }
+}
+
+function applySettings() {
   socket.emit('applySettings', {
     assetClass: chosenClass,
     contractId: chosenContractId,
@@ -99,7 +109,6 @@ function startGame() {
     numRounds: parseInt($('num-rounds').value, 10),
     marketMaking: $('mm-mode').checked,
   });
-  $('settings-overlay').classList.add('hidden');
 }
 
 socket.on('gameStarted', () => { $('settings-overlay').classList.add('hidden'); });
