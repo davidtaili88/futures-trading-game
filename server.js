@@ -127,6 +127,13 @@ function startGame(roomId, rawSettings) {
   }
   io.to(roomId).emit('gameStarted');
   broadcast(roomId);
+
+  // In MM mode, immediately open bidding for round 1.
+  if (room.settings.marketMaking) {
+    room.game.round = 1;
+    broadcast(roomId);
+    openBidPhase(roomId);
+  }
 }
 
 function pickHintFor(room, socketId) {
@@ -171,8 +178,9 @@ function resolveBids(roomId) {
   const tied = entries.filter(([, m]) => m === minMargin);
   const [winnerId, winMargin] = tied[Math.floor(Math.random() * tied.length)];
 
-  // Derive mid from last trade or 0.
-  const mid = lastPrice(room) ?? 0;
+  // Derive mid from last trade, or fall back to the hint mean (expected value).
+  const meanHint = room.game.hintCards.find((c) => c.key === 'mean');
+  const mid = lastPrice(room) ?? meanHint?.value ?? 0;
   const half = winMargin / 2;
   room.mm = {
     phase: 'trading',
@@ -327,7 +335,7 @@ io.on('connection', (socket) => {
     if (isClosed(room)) return;
 
     room.game.round += 1;
-    room.mm = null; // clear any previous MM state
+    room.mm = null;
 
     if (isClosed(room)) {
       settleAll(room);
@@ -335,10 +343,10 @@ io.on('connection', (socket) => {
       return;
     }
 
+    // Reveal the new asset first, then open bidding (or go straight to trading).
+    broadcast(roomId);
     if (room.settings.marketMaking) {
       openBidPhase(roomId);
-    } else {
-      broadcast(roomId);
     }
   });
 

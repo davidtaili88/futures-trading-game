@@ -260,6 +260,16 @@ main {
 .bid-input-row button:disabled { opacity: 0.45; cursor: not-allowed; }
 .bid-status { margin-top: 14px; font-size: 13px; color: var(--gold); min-height: 18px; }
 .bid-waiting { margin-top: 8px; font-size: 13px; color: var(--muted); }
+.bid-players { margin-top: 16px; display: flex; flex-direction: column; gap: 6px; text-align: left; }
+.bid-player-row { padding: 7px 12px; border-radius: 6px; font-size: 13px; }
+.bid-done { background: rgba(46,160,67,0.15); border: 1px solid var(--green); color: var(--green); }
+.bid-pending { background: var(--panel2); border: 1px solid var(--border); color: var(--muted); }
+.bid-force-btn {
+  margin-top: 14px; width: 100%; padding: 10px; font-size: 13px;
+  background: var(--panel2); border: 1px solid var(--border);
+  color: var(--muted); border-radius: 8px; cursor: pointer;
+}
+.bid-force-btn:hover { border-color: var(--accent); color: var(--text); }
 
 /* ---------- MM banner ---------- */
 .mm-banner {

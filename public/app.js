@@ -166,6 +166,8 @@ function renderHints() {
 socket.on('bidPhaseOpen', () => {
   $('bid-status').textContent = '';
   $('bid-waiting').classList.add('hidden');
+  $('bid-players').innerHTML = '';
+  $('bid-force-btn').classList.add('hidden');
   $('bid-input').value = '';
   $('bid-submit-btn').disabled = false;
   $('bid-overlay').classList.remove('hidden');
@@ -184,6 +186,30 @@ $('bid-submit-btn').addEventListener('click', () => {
   $('bid-waiting').classList.remove('hidden');
   $('bid-status').textContent = `Bid submitted: ±${(margin / 2).toFixed(2)}`;
 });
+
+$('bid-force-btn').addEventListener('click', () => {
+  socket.emit('resolveBids');
+  $('bid-force-btn').classList.add('hidden');
+});
+
+function updateBidOverlay(mm, players) {
+  if (!mm || mm.phase !== 'bidding') return;
+  const bidderSet = new Set(mm.bidderIds);
+  const connected = players.filter((p) => p.connected);
+  const remaining = connected.filter((p) => !bidderSet.has(p.id));
+
+  $('bid-players').innerHTML = connected.map((p) => {
+    const done = bidderSet.has(p.id);
+    return `<div class="bid-player-row ${done ? 'bid-done' : 'bid-pending'}">
+      ${done ? '✓' : '…'} ${escapeHtml(p.name)}${p.id === myId ? ' (you)' : ''}
+    </div>`;
+  }).join('');
+
+  // Show force-resolve button once at least one bid is in and someone hasn't bid.
+  if (mm.bidderIds.length > 0 && remaining.length > 0) {
+    $('bid-force-btn').classList.remove('hidden');
+  }
+}
 
 // ---------- Controls ----------
 $('next-round-btn').addEventListener('click', () => socket.emit('nextRound'));
@@ -225,6 +251,7 @@ socket.on('state', ({ game, players, trades, lastPrice, mm }) => {
   renderTape(trades);
   renderMMBanner(mm, game);
   renderLobby(players);
+  updateBidOverlay(mm, players);
   $('last-price').textContent = lastPrice != null ? lastPrice : '—';
   renderYou(players);
 
