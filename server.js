@@ -178,26 +178,23 @@ function resolveBids(roomId) {
   const tied = entries.filter(([, m]) => m === minMargin);
   const [winnerId, winMargin] = tied[Math.floor(Math.random() * tied.length)];
 
-  // Derive mid from last trade, or fall back to the hint mean (expected value).
-  const meanHint = room.game.hintCards.find((c) => c.key === 'mean');
-  const mid = lastPrice(room) ?? meanHint?.value ?? 0;
-  const half = winMargin / 2;
+  // Move to 'quoting' phase — winner must now set their own bid/ask.
   room.mm = {
-    phase: 'trading',
+    phase: 'quoting',
     bids: room.mm.bids,
     makerId: winnerId,
     margin: winMargin,
-    bid: Math.max(0, Math.round((mid - half) * 100) / 100),
-    ask: Math.round((mid + half) * 100) / 100,
+    bid: null,
+    ask: null,
   };
 
   broadcast(roomId);
+  // Tell everyone who won, tell the winner to enter their prices.
   io.to(roomId).emit('bidPhaseResolved', {
     makerName: room.players[winnerId]?.name ?? '—',
     margin: winMargin,
-    bid: room.mm.bid,
-    ask: room.mm.ask,
   });
+  io.to(winnerId).emit('setMarketPrompt', { margin: winMargin });
 }
 
 io.on('connection', (socket) => {
@@ -321,6 +318,22 @@ io.on('connection', (socket) => {
     const connected = connectedPlayerIds(room);
     const allBid = connected.every((id) => room.mm.bids[id] !== undefined);
     if (allBid) resolveBids(roomId);
+  });
+
+  // Market maker submits their chosen bid and ask prices.
+  socket.on('setMarket', ({ bid, ask }) => {
+    if (!roomId) return;
+    const room = getRoom(roomId);
+    if (!room.mm || room.mm.phase !== 'quoting') return;
+    if (socket.id !== room.mm.makerId) return;
+    bid = Math.round(parseFloat(bid) * 100) / 100;
+    ask = Math.round(parseFloat(ask) * 100) / 100;
+    if (!isFinite(bid) || !isFinite(ask) || bid < 0 || ask <= bid) return;
+    room.mm.bid = bid;
+    room.mm.ask = ask;
+    room.mm.phase = 'trading';
+    broadcast(roomId);
+    io.to(roomId).emit('marketSet', { makerName: room.players[socket.id]?.name ?? '—', bid, ask });
   });
 
   // Host can force-resolve bids early (not all players submitted).

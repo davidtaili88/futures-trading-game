@@ -271,6 +271,17 @@ main {
 }
 .bid-force-btn:hover { border-color: var(--accent); color: var(--text); }
 
+/* ---------- Market maker quote inputs ---------- */
+.quote-inputs { display: flex; gap: 16px; justify-content: center; margin: 20px 0 4px; flex-wrap: wrap; }
+.quote-label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); text-align: left; }
+.quote-label input {
+  width: 130px; padding: 12px; font-size: 20px; font-weight: 700; text-align: center;
+  background: var(--panel2); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text);
+}
+.quote-label:first-child input { border-color: var(--red); }
+.quote-label:last-child input { border-color: var(--green); }
+
 /* ---------- MM banner ---------- */
 .mm-banner {
   border-radius: 8px; padding: 10px 14px;

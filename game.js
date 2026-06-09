@@ -220,8 +220,7 @@ export function newGame(rawSettings) {
   };
 }
 
-// How many assets are revealed given the current round: one per round, capped
-// at the number of assets drawn.
+// Round 1 has no reveal. From round 2 onwards one asset is revealed per round.
 export function revealedForRound(game) {
-  return Math.min(game.round, game.assets.length);
+  return Math.min(Math.max(0, game.round - 1), game.assets.length);
 }

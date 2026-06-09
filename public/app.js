@@ -132,7 +132,12 @@ function applySettings() {
 }
 
 socket.on('gameStarted', () => { $('settings-overlay').classList.add('hidden'); });
-socket.on('openSettings', () => { $('settings-overlay').classList.remove('hidden'); });
+socket.on('openSettings', () => {
+  $('settings-overlay').classList.remove('hidden');
+  $('bid-overlay').classList.add('hidden');
+  $('quote-overlay').classList.add('hidden');
+  $('quote-wait-overlay').classList.add('hidden');
+});
 socket.on('joined', ({ id, startCash: sc }) => {
   myId = id;
   startCash = sc;
@@ -173,9 +178,38 @@ socket.on('bidPhaseOpen', () => {
   $('bid-overlay').classList.remove('hidden');
 });
 
-socket.on('bidPhaseResolved', ({ makerName, margin, bid, ask }) => {
+socket.on('bidPhaseResolved', ({ makerName, margin }) => {
   $('bid-overlay').classList.add('hidden');
-  msg(`Market maker: ${makerName} (spread ${margin}) — Bid ${bid} / Ask ${ask}`);
+  // Show waiting screen for non-makers; maker gets setMarketPrompt separately.
+  $('quote-wait-sub').textContent = `${makerName} won with margin ${margin} and is setting prices…`;
+  $('quote-wait-overlay').classList.remove('hidden');
+});
+
+socket.on('setMarketPrompt', ({ margin }) => {
+  $('quote-wait-overlay').classList.add('hidden');
+  $('quote-sub').textContent = `You won with margin ${margin}. Set your bid and ask prices — other players trade at these.`;
+  $('quote-bid').value = '';
+  $('quote-ask').value = '';
+  $('quote-error').textContent = '';
+  $('quote-submit-btn').disabled = false;
+  $('quote-overlay').classList.remove('hidden');
+});
+
+socket.on('marketSet', ({ makerName, bid, ask }) => {
+  $('quote-wait-overlay').classList.add('hidden');
+  $('quote-overlay').classList.add('hidden');
+  msg(`${makerName} set market — Bid ${bid} / Ask ${ask}`);
+});
+
+$('quote-submit-btn').addEventListener('click', () => {
+  const bid = parseFloat($('quote-bid').value);
+  const ask = parseFloat($('quote-ask').value);
+  if (!isFinite(bid) || bid < 0) { $('quote-error').textContent = 'Enter a valid bid price.'; return; }
+  if (!isFinite(ask) || ask < 0) { $('quote-error').textContent = 'Enter a valid ask price.'; return; }
+  if (ask <= bid) { $('quote-error').textContent = 'Ask must be higher than bid.'; return; }
+  socket.emit('setMarket', { bid, ask });
+  $('quote-submit-btn').disabled = true;
+  $('quote-overlay').classList.add('hidden');
 });
 
 $('bid-submit-btn').addEventListener('click', () => {
@@ -249,7 +283,7 @@ socket.on('state', ({ game, players, trades, lastPrice, mm }) => {
   renderContract(game);
   renderPlayers(players);
   renderTape(trades);
-  renderMMBanner(mm, game);
+  renderMMBanner(mm);
   renderLobby(players);
   updateBidOverlay(mm, players);
   $('last-price').textContent = lastPrice != null ? lastPrice : '—';
@@ -257,11 +291,11 @@ socket.on('state', ({ game, players, trades, lastPrice, mm }) => {
 
   const settled = game.settled;
   const isMaker = mm?.phase === 'trading' && myId === mm.makerId;
-  const inBidding = mm?.phase === 'bidding';
+  const blocked = mm?.phase === 'bidding' || mm?.phase === 'quoting';
 
-  $('buy-btn').disabled = settled || inBidding;
-  $('sell-btn').disabled = settled || inBidding;
-  $('next-round-btn').disabled = settled || inBidding;
+  $('buy-btn').disabled = settled || blocked;
+  $('sell-btn').disabled = settled || blocked;
+  $('next-round-btn').disabled = settled || blocked;
   $('next-round-btn').textContent = settled ? 'Settled' : 'Next Round ▶';
 
   // Show price input only for market maker or non-MM mode.
@@ -285,9 +319,9 @@ function renderLobby(players) {
   }
 }
 
-function renderMMBanner(mm, game) {
+function renderMMBanner(mm) {
   const banner = $('mm-banner');
-  if (!mm || mm.phase === 'bidding') {
+  if (!mm || mm.phase === 'bidding' || mm.phase === 'quoting') {
     banner.classList.add('hidden');
     return;
   }
