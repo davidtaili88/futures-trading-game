@@ -1,4 +1,5 @@
 {
+  "framework": null,
   "outputDirectory": "public",
   "buildCommand": "node build.js",
   "installCommand": "npm install"
