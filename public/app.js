@@ -9,7 +9,26 @@ const $ = (id) => document.getElementById(id);
 
 // ---------- Room ----------
 const roomId = location.hash.slice(1) || 'main';
-socket.on('connect', () => { socket.emit('joinRoom', roomId); });
+
+socket.on('connect', () => {
+  socket.emit('joinRoom', roomId);
+  $('start-btn').textContent = 'Start Game';
+  $('start-btn').disabled = false;
+});
+
+socket.on('disconnect', () => {
+  $('start-btn').textContent = 'Reconnecting…';
+  $('start-btn').disabled = true;
+});
+
+socket.on('connect_error', () => {
+  $('start-btn').textContent = 'Connecting to server…';
+  $('start-btn').disabled = true;
+});
+
+// Show connecting state immediately on page load.
+$('start-btn').textContent = 'Connecting to server…';
+$('start-btn').disabled = true;
 
 // ---------- Settings screen ----------
 let assetClasses = [];
