@@ -207,6 +207,19 @@ main {
 .tape-row .sell { color: var(--red); }
 .tape-row .tt { color: var(--muted); }
 
+/* ---------- Lobby player list ---------- */
+.lobby-list {
+  display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px;
+}
+.lobby-player {
+  padding: 8px 12px; border-radius: 6px;
+  background: var(--panel2); border: 1px solid var(--border);
+  font-size: 14px; text-align: left; color: var(--text);
+}
+.lobby-player.you {
+  border-color: var(--accent); color: var(--accent); font-weight: 600;
+}
+
 /* ---------- Market making toggle ---------- */
 .toggle-row {
   display: flex; align-items: flex-start; gap: 10px;

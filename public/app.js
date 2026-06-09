@@ -132,7 +132,11 @@ function applySettings() {
 
 socket.on('gameStarted', () => { $('settings-overlay').classList.add('hidden'); });
 socket.on('openSettings', () => { $('settings-overlay').classList.remove('hidden'); });
-socket.on('joined', ({ id, startCash: sc }) => { myId = id; startCash = sc; });
+socket.on('joined', ({ id, startCash: sc }) => {
+  myId = id;
+  startCash = sc;
+  $('lobby-section').classList.remove('hidden');
+});
 
 // ---------- Hints ----------
 let hintCards = [];
@@ -219,8 +223,9 @@ socket.on('state', ({ game, players, trades, lastPrice, mm }) => {
   renderPlayers(players);
   renderTape(trades);
   renderMMBanner(mm, game);
+  renderLobby(players);
   $('last-price').textContent = lastPrice != null ? lastPrice : '—';
-  renderYou(players, game);
+  renderYou(players);
 
   const settled = game.settled;
   const isMaker = mm?.phase === 'trading' && myId === mm.makerId;
@@ -235,6 +240,22 @@ socket.on('state', ({ game, players, trades, lastPrice, mm }) => {
   const priceLabel = $('price').closest('label');
   if (priceLabel) priceLabel.style.display = (mm?.phase === 'trading' && !isMaker) ? 'none' : '';
 });
+
+function renderLobby(players) {
+  const overlay = $('settings-overlay');
+  if (overlay.classList.contains('hidden')) return;
+  const list = $('lobby-list');
+  const count = $('lobby-count');
+  list.innerHTML = '';
+  const connected = players.filter((p) => p.connected);
+  count.textContent = `(${connected.length})`;
+  for (const p of connected) {
+    const div = document.createElement('div');
+    div.className = 'lobby-player' + (p.id === myId ? ' you' : '');
+    div.textContent = p.name + (p.id === myId ? ' (you)' : '');
+    list.appendChild(div);
+  }
+}
 
 function renderMMBanner(mm, game) {
   const banner = $('mm-banner');

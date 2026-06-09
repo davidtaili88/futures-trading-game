@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Futures Trading Game</title>
+  <title>Trading Games v1</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <!-- Settings / start overlay (also shown on Restart) -->
   <div id="settings-overlay" class="overlay">
     <div class="join-box">
-      <h1>📈 Futures Trading Game</h1>
+      <h1>📈 Trading Games v1</h1>
       <p class="sub">Trade a contract whose value is a secret arithmetic result of the drawn assets.</p>
 
       <label class="field-label" for="name-input">Trader name</label>
@@ -43,8 +43,13 @@
         </label>
       </div>
 
+      <div id="lobby-section" class="hidden">
+        <label class="field-label">Players in lobby <span id="lobby-count" class="muted"></span></label>
+        <div id="lobby-list" class="lobby-list"></div>
+      </div>
+
       <button id="start-btn">Start Game</button>
-      <p class="hint-text">Open this page in multiple tabs / on other devices on your network to play together. Starting applies these settings for everyone.</p>
+      <p class="hint-text">Share this page's URL with others to play in the same room. Starting applies settings for everyone.</p>
     </div>
   </div>
 
@@ -63,7 +68,7 @@
   </div>
 
   <header>
-    <div class="brand">📈 Futures Trading Game</div>
+    <div class="brand">📈 Trading Games v1</div>
     <div class="controls">
       <button id="next-round-btn" class="btn-primary">Next Round ▶</button>
       <button id="restart-btn" class="btn-secondary">↻ Restart Game</button>
