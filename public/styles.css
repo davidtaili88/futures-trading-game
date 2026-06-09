@@ -32,7 +32,8 @@ body {
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 40px;
-  width: min(440px, 90vw);
+  width: min(520px, 92vw);
+  max-height: 90vh; overflow-y: auto;
   text-align: center;
 }
 .join-box h1 { margin: 0 0 8px; font-size: 28px; }
@@ -66,6 +67,18 @@ body {
 .seg-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 input[type="range"] { width: 100%; accent-color: var(--accent); margin: 4px 0; }
 #rounds-note { margin-top: 8px; min-height: 16px; }
+
+/* ---------- Contract picker ---------- */
+.contract-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px; }
+.contract-card {
+  padding: 12px 14px; border-radius: 8px; cursor: pointer;
+  background: var(--panel2); border: 1px solid var(--border);
+  text-align: left; transition: border-color 0.15s;
+}
+.contract-card:hover { border-color: var(--accent); }
+.contract-card.active { border-color: var(--accent); background: rgba(47,129,247,0.12); }
+.cc-name { font-size: 14px; font-weight: 600; color: var(--text); }
+.cc-desc { font-size: 12px; color: var(--muted); margin-top: 3px; }
 
 /* ---------- Header ---------- */
 header {

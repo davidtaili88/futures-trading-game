@@ -1,23 +1,38 @@
-const socket = io();
+// SOCKET_URL is injected at build time for production (points to the backend host).
+// In development the browser connects to the same origin automatically.
+const SOCKET_URL = window.__SOCKET_URL__ || undefined;
+const socket = SOCKET_URL ? io(SOCKET_URL) : io();
 
 let myId = null;
 let startCash = 1000;
-// Track which hint cards are revealed locally (default: all hidden).
 const revealed = {}; // key -> bool
 
 // ---------- DOM ----------
 const $ = (id) => document.getElementById(id);
 
+// ---------- Room ----------
+// Room is derived from the URL hash. Each unique hash = isolated game.
+const roomId = location.hash.slice(1) || 'main';
+
+// Send room id immediately on connect so server can route us.
+socket.on('connect', () => {
+  socket.emit('joinRoom', roomId);
+});
+
 // ---------- Settings screen ----------
-let assetClasses = [];     // [{key,label,unit,maxAssets}]
+let assetClasses = [];
+let contracts = [];
 let chosenClass = 'cards';
+let chosenContractId = null; // null = random
 let hasJoined = false;
 
-// Server sends config (asset classes + current settings) on connect.
-socket.on('config', ({ assetClasses: classes, current }) => {
+socket.on('config', ({ assetClasses: classes, contracts: ctrs, current }) => {
   assetClasses = classes;
+  contracts = ctrs;
   chosenClass = current.assetClass;
+  chosenContractId = current.contractId;
   renderAssetClassButtons();
+  renderContractButtons();
   $('num-assets').value = current.numAssets;
   $('num-rounds').value = current.numRounds;
   syncSettingsLabels();
@@ -32,7 +47,6 @@ function renderAssetClassButtons() {
     b.textContent = c.label;
     b.addEventListener('click', () => {
       chosenClass = c.key;
-      // Clamp the asset slider to this class's maximum.
       const slider = $('num-assets');
       slider.max = c.maxAssets;
       if (parseInt(slider.value, 10) > c.maxAssets) slider.value = c.maxAssets;
@@ -41,9 +55,34 @@ function renderAssetClassButtons() {
     });
     group.appendChild(b);
   }
-  // Apply the current class's max to the slider.
   const cls = assetClasses.find((c) => c.key === chosenClass);
   if (cls) $('num-assets').max = cls.maxAssets;
+}
+
+function renderContractButtons() {
+  const group = $('contract-group');
+  group.innerHTML = '';
+
+  // "Random" option
+  const randomBtn = document.createElement('div');
+  randomBtn.className = 'contract-card' + (chosenContractId === null ? ' active' : '');
+  randomBtn.innerHTML = `<div class="cc-name">🎲 Random</div><div class="cc-desc">Contract type is revealed when the game starts.</div>`;
+  randomBtn.addEventListener('click', () => {
+    chosenContractId = null;
+    renderContractButtons();
+  });
+  group.appendChild(randomBtn);
+
+  for (const c of contracts) {
+    const card = document.createElement('div');
+    card.className = 'contract-card' + (chosenContractId === c.id ? ' active' : '');
+    card.innerHTML = `<div class="cc-name">${escapeHtml(c.name)}</div><div class="cc-desc">${escapeHtml(c.description)}</div>`;
+    card.addEventListener('click', () => {
+      chosenContractId = c.id;
+      renderContractButtons();
+    });
+    group.appendChild(card);
+  }
 }
 
 function syncSettingsLabels() {
@@ -80,18 +119,17 @@ function startGame() {
   }
   socket.emit('applySettings', {
     assetClass: chosenClass,
+    contractId: chosenContractId,
     numAssets: parseInt($('num-assets').value, 10),
     numRounds: parseInt($('num-rounds').value, 10),
   });
   $('settings-overlay').classList.add('hidden');
 }
 
-// A new game has started (settings applied) -> make sure the board is visible.
 socket.on('gameStarted', () => {
   $('settings-overlay').classList.add('hidden');
 });
 
-// Restart on any client re-opens the settings screen for everyone.
 socket.on('openSettings', () => {
   $('settings-overlay').classList.remove('hidden');
 });
@@ -101,11 +139,10 @@ socket.on('joined', ({ id, startCash: sc }) => {
   startCash = sc;
 });
 
-// ---------- Hints (private to player, hidden by default) ----------
+// ---------- Hints (one random hint per player, hidden by default) ----------
 let hintCards = [];
 socket.on('hints', (cards) => {
   hintCards = cards;
-  // Reset reveal state on new game.
   for (const c of cards) revealed[c.key] = false;
   renderHints();
 });
@@ -113,6 +150,10 @@ socket.on('hints', (cards) => {
 function renderHints() {
   const wrap = $('hints');
   wrap.innerHTML = '';
+  if (!hintCards.length) {
+    wrap.innerHTML = '<div class="muted">No hints available.</div>';
+    return;
+  }
   for (const c of hintCards) {
     const isShown = revealed[c.key];
     const div = document.createElement('div');
@@ -132,11 +173,7 @@ function renderHints() {
 
 // ---------- Controls ----------
 $('next-round-btn').addEventListener('click', () => socket.emit('nextRound'));
-$('restart-btn').addEventListener('click', () => {
-  // Opens the settings screen for everyone; the game restarts when settings
-  // are applied from there.
-  socket.emit('restart');
-});
+$('restart-btn').addEventListener('click', () => socket.emit('restart'));
 
 // ---------- Trading ----------
 $('buy-btn').addEventListener('click', () => sendTrade('buy'));
@@ -164,7 +201,6 @@ socket.on('state', ({ game, players, trades, lastPrice }) => {
   renderTape(trades);
   $('last-price').textContent = lastPrice != null ? lastPrice : '—';
   renderYou(players, game);
-  // Disable trading / next-round when settled.
   const settled = game.settled;
   $('buy-btn').disabled = settled;
   $('sell-btn').disabled = settled;
@@ -182,7 +218,6 @@ function renderContract(game) {
   const pct = game.numRounds ? (game.round / game.numRounds) * 100 : 0;
   $('progress-bar').style.width = pct + '%';
 
-  // Assets
   const wrap = $('assets');
   wrap.innerHTML = '';
   for (const a of game.revealedAssets) {
@@ -198,10 +233,9 @@ function renderContract(game) {
     wrap.appendChild(div);
   }
   if (game.revealedCount === 0) {
-    wrap.innerHTML = '<div class="muted" style="align-self:center;">No assets revealed yet — click “Next Round”.</div>';
+    wrap.innerHTML = '<div class="muted" style="align-self:center;">No assets revealed yet — click "Next Round".</div>';
   }
 
-  // Settlement
   const box = $('settlement-box');
   if (game.settled) {
     box.classList.remove('hidden');
@@ -214,7 +248,6 @@ function renderContract(game) {
 function renderPlayers(players) {
   const body = $('players-body');
   body.innerHTML = '';
-  // Sort by PnL desc for a leaderboard feel.
   players.sort((a, b) => b.pnl - a.pnl);
   for (const p of players) {
     const tr = document.createElement('tr');

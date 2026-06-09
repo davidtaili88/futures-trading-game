@@ -3,135 +3,179 @@ import http from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { newGame, revealedForRound, normalizeSettings, defaultSettings, assetClassInfo } from './game.js';
+import { newGame, revealedForRound, normalizeSettings, defaultSettings, assetClassInfo, contractInfo } from './game.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+  cors: {
+    origin: process.env.FRONTEND_URL || '*',
+    methods: ['GET', 'POST'],
+  },
+});
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ---------- In-memory game state (single shared room) ----------
-// For a localhost party game we keep one global room. Extendable to many.
-
-const ROOM = 'main';
 const START_CASH = 1000;
 
-let settings = defaultSettings();
-let game = newGame(settings);
-let trades = [];        // { round, trader, side, qty, price, ts }
-let players = {};       // socketId -> { id, name, cash, position, connected }
+// rooms[roomId] = { settings, game, trades, players }
+const rooms = {};
 
-function isClosed() {
-  // Market closes when all configured trading rounds are done.
-  return game.round >= game.contract.numRounds;
+function getRoom(roomId) {
+  if (!rooms[roomId]) {
+    const settings = defaultSettings();
+    rooms[roomId] = {
+      settings,
+      game: newGame(settings),
+      trades: [],
+      players: {},  // socketId -> { id, name, cash, position, connected, hintKey }
+    };
+  }
+  return rooms[roomId];
 }
 
-function publicGameState() {
-  const revealedCount = revealedForRound(game);
-  const closed = isClosed();
+function isClosed(room) {
+  return room.game.round >= room.game.contract.numRounds;
+}
+
+function lastPrice(room) {
+  if (room.trades.length) return room.trades[room.trades.length - 1].price;
+  return null;
+}
+
+function pnlFor(p, room) {
+  const mark = isClosed(room) ? room.game.settlement : (lastPrice(room) ?? 0);
+  const equity = p.cash + p.position * mark;
+  return Math.round((equity - START_CASH) * 100) / 100;
+}
+
+function publicGameState(room) {
+  const revealedCount = revealedForRound(room.game);
+  const closed = isClosed(room);
   return {
-    contract: game.contract,
-    revealedAssets: game.assets.slice(0, revealedCount),
+    contract: room.game.contract,
+    revealedAssets: room.game.assets.slice(0, revealedCount),
     revealedCount,
-    totalAssets: game.assets.length,
-    round: game.round,
-    numRounds: game.contract.numRounds,
+    totalAssets: room.game.assets.length,
+    round: room.game.round,
+    numRounds: room.game.contract.numRounds,
     settled: closed,
-    settlement: closed ? game.settlement : null,
+    settlement: closed ? room.game.settlement : null,
   };
 }
 
-function playerList() {
-  return Object.values(players).map((p) => ({
+function playerList(room) {
+  return Object.values(room.players).map((p) => ({
     id: p.id,
     name: p.name,
     cash: Math.round(p.cash * 100) / 100,
     position: p.position,
     connected: p.connected,
-    pnl: pnlFor(p),
+    pnl: pnlFor(p, room),
   }));
 }
 
-function lastPrice() {
-  if (trades.length) return trades[trades.length - 1].price;
-  return null;
-}
-
-// Mark-to-market PnL: cash change + position valued at last trade price
-// (or settlement once the game is closed).
-function pnlFor(p) {
-  const mark = isClosed() ? game.settlement : (lastPrice() ?? 0);
-  const equity = p.cash + p.position * mark;
-  return Math.round((equity - START_CASH) * 100) / 100;
-}
-
-function broadcast() {
-  io.to(ROOM).emit('state', {
-    game: publicGameState(),
-    players: playerList(),
-    trades: trades.slice(-30),
-    lastPrice: lastPrice(),
+function broadcast(roomId) {
+  const room = rooms[roomId];
+  if (!room) return;
+  io.to(roomId).emit('state', {
+    game: publicGameState(room),
+    players: playerList(room),
+    trades: room.trades.slice(-30),
+    lastPrice: lastPrice(room),
   });
 }
 
-// Start a brand-new game with the given settings and reset all players.
-function startGame(rawSettings) {
-  settings = normalizeSettings(rawSettings);
-  game = newGame(settings);
-  trades = [];
-  for (const p of Object.values(players)) {
+function startGame(roomId, rawSettings) {
+  const room = getRoom(roomId);
+  room.settings = normalizeSettings(rawSettings);
+  room.game = newGame(room.settings);
+  room.trades = [];
+  for (const p of Object.values(room.players)) {
     p.cash = START_CASH;
     p.position = 0;
   }
-  io.to(ROOM).emit('hints', game.hintCards);
-  io.to(ROOM).emit('gameStarted');
-  broadcast();
+  // Assign each player a fresh random single hint card.
+  for (const sid of Object.keys(room.players)) {
+    const hint = pickHintFor(room, sid);
+    io.to(sid).emit('hints', hint ? [hint] : []);
+  }
+  io.to(roomId).emit('gameStarted');
+  broadcast(roomId);
+}
+
+// Pick one random hint card for a socket, store the key on the player.
+function pickHintFor(room, socketId) {
+  const cards = room.game.hintCards;
+  if (!cards.length) return null;
+  const card = cards[Math.floor(Math.random() * cards.length)];
+  if (room.players[socketId]) room.players[socketId].hintKey = card.key;
+  return card;
+}
+
+function settleAll(room) {
+  const s = room.game.settlement;
+  for (const p of Object.values(room.players)) {
+    p.cash += p.position * s;
+    p.position = 0;
+  }
 }
 
 io.on('connection', (socket) => {
-  socket.join(ROOM);
+  // Room is determined by the URL hash sent from the client on connect.
+  let roomId = null;
 
-  // Give the client everything it needs to render the settings screen.
-  socket.emit('config', {
-    assetClasses: assetClassInfo(),
-    current: settings,
-    startCash: START_CASH,
+  socket.on('joinRoom', (rid) => {
+    roomId = String(rid || 'main').trim().slice(0, 40) || 'main';
+    socket.join(roomId);
+    const room = getRoom(roomId);
+
+    socket.emit('config', {
+      assetClasses: assetClassInfo(),
+      contracts: contractInfo(),
+      current: room.settings,
+      startCash: START_CASH,
+    });
   });
 
   socket.on('join', (name) => {
+    if (!roomId) return;
+    const room = getRoom(roomId);
     const clean = String(name || '').trim().slice(0, 20) || `Trader-${socket.id.slice(0, 4)}`;
-    players[socket.id] = {
+    room.players[socket.id] = {
       id: socket.id,
       name: clean,
       cash: START_CASH,
       position: 0,
       connected: true,
+      hintKey: null,
     };
-    socket.emit('hints', game.hintCards);
+    const hint = pickHintFor(room, socket.id);
+    socket.emit('hints', hint ? [hint] : []);
     socket.emit('joined', { id: socket.id, startCash: START_CASH });
-    broadcast();
+    broadcast(roomId);
   });
 
-  // Apply settings = start a fresh game for everyone with this configuration.
   socket.on('applySettings', (incoming) => {
-    startGame(incoming);
+    if (!roomId) return;
+    startGame(roomId, incoming);
   });
 
-  // A market order vs. "the house" at the stated price. Trades are logged.
   socket.on('trade', ({ side, qty, price }) => {
-    const p = players[socket.id];
+    if (!roomId) return;
+    const room = getRoom(roomId);
+    const p = room.players[socket.id];
     if (!p) return;
-    if (isClosed()) return; // market closed
+    if (isClosed(room)) return;
     qty = Math.max(1, Math.min(100, parseInt(qty, 10) || 0));
     price = parseFloat(price);
     if (!isFinite(price) || price < 0) return;
 
     const cost = qty * price;
     if (side === 'buy') {
-      if (p.cash < cost) return; // can't afford
+      if (p.cash < cost) return;
       p.cash -= cost;
       p.position += qty;
     } else if (side === 'sell') {
@@ -140,57 +184,51 @@ io.on('connection', (socket) => {
     } else {
       return;
     }
-    trades.push({
-      round: game.round,
+    room.trades.push({
+      round: room.game.round,
       trader: p.name,
       side,
       qty,
       price: Math.round(price * 100) / 100,
       ts: Date.now(),
     });
-    broadcast();
+    broadcast(roomId);
   });
 
-  // Advance to the next round. One asset is revealed per round (up to the
-  // number drawn). When the final configured round completes, settle.
   socket.on('nextRound', () => {
-    if (!isClosed()) {
-      game.round += 1;
-      if (isClosed()) settleAll();
+    if (!roomId) return;
+    const room = getRoom(roomId);
+    if (!isClosed(room)) {
+      room.game.round += 1;
+      if (isClosed(room)) settleAll(room);
     }
-    broadcast();
+    broadcast(roomId);
   });
 
-  // Restart no longer immediately starts a game — it asks every client to
-  // open the settings screen so the host can reconfigure.
   socket.on('restart', () => {
-    io.to(ROOM).emit('openSettings');
+    if (!roomId) return;
+    io.to(roomId).emit('openSettings');
   });
 
   socket.on('rename', (name) => {
-    const p = players[socket.id];
+    if (!roomId) return;
+    const room = getRoom(roomId);
+    const p = room.players[socket.id];
     if (p) {
       p.name = String(name || '').trim().slice(0, 20) || p.name;
-      broadcast();
+      broadcast(roomId);
     }
   });
 
   socket.on('disconnect', () => {
-    if (players[socket.id]) {
-      players[socket.id].connected = false; // keep positions in the book
-      broadcast();
+    if (!roomId) return;
+    const room = rooms[roomId];
+    if (room && room.players[socket.id]) {
+      room.players[socket.id].connected = false;
+      broadcast(roomId);
     }
   });
 });
-
-// When the market closes, settle every open position at the settlement price.
-function settleAll() {
-  const s = game.settlement;
-  for (const p of Object.values(players)) {
-    p.cash += p.position * s;
-    p.position = 0;
-  }
-}
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {

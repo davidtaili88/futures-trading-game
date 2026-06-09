@@ -169,11 +169,17 @@ export function normalizeSettings(s = {}) {
   let numRounds = parseInt(s.numRounds, 10);
   if (!Number.isFinite(numRounds)) numRounds = numAssets;
   numRounds = Math.max(1, Math.min(20, numRounds));
-  return { assetClass: classKey, numAssets, numRounds };
+  const contractId = CONTRACTS.find((c) => c.id === s.contractId) ? s.contractId : null;
+  return { assetClass: classKey, numAssets, numRounds, contractId };
 }
 
 export function defaultSettings() {
-  return { assetClass: 'cards', numAssets: 5, numRounds: 5 };
+  return { assetClass: 'cards', numAssets: 5, numRounds: 5, contractId: null };
+}
+
+// Expose contract metadata for the settings UI.
+export function contractInfo() {
+  return CONTRACTS.map(({ id, name, description }) => ({ id, name, description }));
 }
 
 // Expose class metadata for the settings UI.
@@ -186,7 +192,9 @@ export function assetClassInfo() {
 export function newGame(rawSettings) {
   const settings = normalizeSettings(rawSettings);
   const cls = ASSET_CLASSES[settings.assetClass];
-  const contract = CONTRACTS[Math.floor(Math.random() * CONTRACTS.length)];
+  const contract = settings.contractId
+    ? CONTRACTS.find((c) => c.id === settings.contractId)
+    : CONTRACTS[Math.floor(Math.random() * CONTRACTS.length)];
   const assets = cls.draw(settings.numAssets);
   const settlement = contract.settle(assets.map((a) => a.value));
   const hints = computeHints(contract, cls, settings.numAssets);
