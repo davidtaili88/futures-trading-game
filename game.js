@@ -150,12 +150,14 @@ function computeHints(contract, assetClass, numAssets) {
   };
 }
 
-function makeHintCards(hints) {
+function makeHintCards(hints, assets) {
+  const vals = assets.map((a) => a.value);
+  const assetRange = Math.max(...vals) - Math.min(...vals);
   return [
     { key: 'min', label: 'Minimum Value', value: hints.min },
     { key: 'max', label: 'Maximum Value', value: hints.max },
     { key: 'mean', label: 'Mean (Expected) Value', value: hints.mean },
-    { key: 'range', label: 'Range (Max − Min)', value: hints.range },
+    { key: 'range', label: 'Asset Range (Max − Min)', value: assetRange },
   ];
 }
 
@@ -198,6 +200,7 @@ export function newGame(rawSettings) {
   const assets = cls.draw(settings.numAssets);
   const settlement = contract.settle(assets.map((a) => a.value));
   const hints = computeHints(contract, cls, settings.numAssets);
+  const hintCards = makeHintCards(hints, assets);
   return {
     settings,
     contract: {
@@ -212,7 +215,7 @@ export function newGame(rawSettings) {
     },
     assets,                 // full set (server-side truth)
     settlement,             // final settlement value (server-side truth)
-    hintCards: makeHintCards(hints),
+    hintCards,
     round: 0,               // current round number (0 = not started)
   };
 }
