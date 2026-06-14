@@ -303,4 +303,33 @@ main {
   border-radius: 3px; padding: 1px 4px; margin-left: 4px; vertical-align: middle;
 }
 
+/* ---------- Order book ---------- */
+.order-book { margin-top: 24px; }
+.ob-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.ob-col { display: flex; flex-direction: column; gap: 4px; }
+.ob-header { font-size: 12px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; padding: 4px 6px; border-radius: 4px; }
+.ob-bid-header { background: rgba(46,160,67,0.15); color: var(--green); }
+.ob-ask-header { background: rgba(218,54,51,0.15); color: var(--red); }
+.ob-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 8px; border-radius: 6px; font-size: 13px;
+  background: var(--panel2); border: 1px solid var(--border);
+}
+.ob-row.ob-mine { border-color: var(--gold); }
+.ob-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.ob-qty { font-weight: 600; color: var(--text); min-width: 20px; text-align: right; }
+.ob-price { color: var(--text); min-width: 48px; text-align: right; }
+.ob-empty { color: var(--muted); font-size: 13px; padding: 6px 8px; }
+.ob-take-btn, .ob-cancel-btn {
+  padding: 3px 8px; border: none; border-radius: 5px;
+  font-size: 12px; font-weight: 700; cursor: pointer; flex-shrink: 0;
+}
+.ob-sell-btn { background: var(--red); color: #fff; }
+.ob-buy-btn { background: var(--green); color: #fff; }
+.ob-cancel-btn { background: var(--panel); border: 1px solid var(--border); color: var(--muted); }
+.ob-take-btn:hover { filter: brightness(1.15); }
+.ob-cancel-btn:hover { border-color: var(--red); color: var(--red); }
+
+.your-orders { font-size: 12px; color: var(--gold); min-height: 16px; margin-top: 6px; }
+
 .hidden { display: none !important; }

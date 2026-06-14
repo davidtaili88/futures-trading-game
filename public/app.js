@@ -255,20 +255,28 @@ $('sell-btn').addEventListener('click', () => sendTrade('sell'));
 
 // currentMM holds the active market for this round (null if none).
 let currentMM = null;
+let isMMMode = false;
 
 function sendTrade(side) {
   const qty = parseInt($('qty').value, 10);
-  let price = parseFloat($('price').value);
+  if (!qty || qty < 1) { msg('Enter a valid quantity.'); return; }
 
-  // In MM trading phase, non-makers trade at the fixed bid/ask — price is ignored.
-  if (currentMM && currentMM.phase === 'trading' && myId !== currentMM.makerId) {
-    price = side === 'buy' ? currentMM.ask : currentMM.bid;
+  if (isMMMode && currentMM?.phase === 'trading' && myId !== currentMM.makerId) {
+    // MM mode: trade at fixed bid/ask.
+    const price = side === 'buy' ? currentMM.ask : currentMM.bid;
+    socket.emit('trade', { side, qty, price });
+    msg(`${side.toUpperCase()} ${qty} @ ${price} sent.`);
+    return;
   }
 
-  if (!isFinite(price) || price < 0) { msg('Enter a valid price.'); return; }
-  if (!qty || qty < 1) { msg('Enter a valid quantity.'); return; }
-  socket.emit('trade', { side, qty, price });
-  msg(`${side.toUpperCase()} ${qty} @ ${price} sent.`);
+  if (!isMMMode) {
+    // Open-outcry: post a resting bid or ask.
+    const price = parseFloat($('price').value);
+    if (!isFinite(price) || price < 0) { msg('Enter a valid price.'); return; }
+    const orderSide = side === 'buy' ? 'bid' : 'ask';
+    socket.emit('postOrder', { side: orderSide, qty, price });
+    msg(`${orderSide.toUpperCase()} ${qty} @ ${price} posted.`);
+  }
 }
 
 function msg(t) {
@@ -278,8 +286,9 @@ function msg(t) {
 }
 
 // ---------- State render ----------
-socket.on('state', ({ game, players, trades, lastPrice, mm }) => {
+socket.on('state', ({ game, players, trades, lastPrice, mm, orderBook }) => {
   currentMM = mm;
+  isMMMode = game.marketMaking;
   renderContract(game);
   renderPlayers(players);
   renderTape(trades);
@@ -298,9 +307,21 @@ socket.on('state', ({ game, players, trades, lastPrice, mm }) => {
   $('next-round-btn').disabled = settled || blocked;
   $('next-round-btn').textContent = settled ? 'Settled' : 'Next Round ▶';
 
-  // Show price input only for market maker or non-MM mode.
-  const priceLabel = $('price').closest('label');
-  if (priceLabel) priceLabel.style.display = (mm?.phase === 'trading' && !isMaker) ? 'none' : '';
+  if (isMMMode) {
+    $('buy-btn').textContent = 'BUY';
+    $('sell-btn').textContent = 'SELL';
+    $('order-book').classList.add('hidden');
+    // Show price input only for market maker.
+    const priceLabel = $('price').closest('label');
+    if (priceLabel) priceLabel.style.display = (mm?.phase === 'trading' && !isMaker) ? 'none' : '';
+  } else {
+    $('buy-btn').textContent = 'BID';
+    $('sell-btn').textContent = 'ASK';
+    $('order-book').classList.remove('hidden');
+    const priceLabel = $('price').closest('label');
+    if (priceLabel) priceLabel.style.display = '';
+    renderOrderBook(orderBook || { bids: {}, asks: {} });
+  }
 });
 
 function renderLobby(players) {
@@ -407,14 +428,80 @@ function renderTape(trades) {
   for (const t of [...trades].reverse()) {
     const row = document.createElement('div');
     row.className = 'tape-row';
-    row.innerHTML = `
-      <span class="${t.side}">${t.side.toUpperCase()} ${t.qty} @ ${t.price}${t.mmRound ? ' <span class="mm-tag">MM</span>' : ''}</span>
-      <span class="tt">${escapeHtml(t.trader)} · R${t.round}</span>
-    `;
+    if (t.mmRound) {
+      // MM trade: one taker, recorded with side.
+      row.innerHTML = `
+        <span class="${t.side}">${t.side.toUpperCase()} ${t.qty} @ ${t.price} <span class="mm-tag">MM</span></span>
+        <span class="tt">${escapeHtml(t.trader)} · R${t.round}</span>
+      `;
+    } else {
+      // Open-outcry trade: bilateral, show buyer vs seller.
+      row.innerHTML = `
+        <span class="buy">${t.qty} @ ${t.price}</span>
+        <span class="tt">${escapeHtml(t.buyer)} / ${escapeHtml(t.seller)} · R${t.round}</span>
+      `;
+    }
     tape.appendChild(row);
   }
   if (!trades.length) tape.innerHTML = '<div class="muted">No trades yet.</div>';
 }
+
+function renderOrderBook(orderBook) {
+  const { bids, asks } = orderBook;
+
+  // Bids: sorted highest price first.
+  const bidEntries = Object.entries(bids).sort(([, a], [, b]) => b.price - a.price);
+  // Asks: sorted lowest price first.
+  const askEntries = Object.entries(asks).sort(([, a], [, b]) => a.price - b.price);
+
+  function renderSide(containerId, entries, side) {
+    const el = $(containerId);
+    el.innerHTML = '';
+    if (!entries.length) {
+      el.innerHTML = '<div class="ob-empty">—</div>';
+      return;
+    }
+    for (const [pid, order] of entries) {
+      const isMe = pid === myId;
+      const row = document.createElement('div');
+      row.className = 'ob-row' + (isMe ? ' ob-mine' : '');
+      const action = isMe
+        ? `<button class="ob-cancel-btn" data-side="${side}">Cancel</button>`
+        : side === 'bid'
+          ? `<button class="ob-take-btn ob-sell-btn" data-side="bid" data-target="${pid}">SELL</button>`
+          : `<button class="ob-take-btn ob-buy-btn" data-side="ask" data-target="${pid}">BUY</button>`;
+      row.innerHTML = `
+        <span class="ob-name">${escapeHtml(order.name)}</span>
+        <span class="ob-qty">${order.qty}</span>
+        <span class="ob-price">@ ${order.price}</span>
+        ${action}
+      `;
+      el.appendChild(row);
+    }
+  }
+
+  renderSide('ob-bids', bidEntries, 'bid');
+  renderSide('ob-asks', askEntries, 'ask');
+
+  // Render your resting orders status.
+  const myBid = bids[myId];
+  const myAsk = asks[myId];
+  const parts = [];
+  if (myBid) parts.push(`Bid ${myBid.qty} @ ${myBid.price}`);
+  if (myAsk) parts.push(`Ask ${myAsk.qty} @ ${myAsk.price}`);
+  $('your-orders').textContent = parts.length ? `Your orders: ${parts.join(' · ')}` : '';
+}
+
+// Delegated click handler for order book buttons.
+$('order-book').addEventListener('click', (e) => {
+  const takeBtn = e.target.closest('.ob-take-btn');
+  const cancelBtn = e.target.closest('.ob-cancel-btn');
+  if (takeBtn) {
+    socket.emit('takeOrder', { side: takeBtn.dataset.side, targetId: takeBtn.dataset.target });
+  } else if (cancelBtn) {
+    socket.emit('cancelOrder', { side: cancelBtn.dataset.side });
+  }
+});
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) =>

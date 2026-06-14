@@ -20,10 +20,12 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const START_CASH = 1000;
 
-// rooms[roomId] = { settings, game, trades, players, mm }
+// rooms[roomId] = { settings, game, trades, players, mm, orderBook }
 // mm = market making state for the current round:
 //   { phase: 'bidding'|'trading'|null, bids: {socketId->margin},
 //     makerId, bid, ask }
+// orderBook = open-outcry resting orders (non-MM mode only):
+//   { bids: {socketId -> {price,qty,name}}, asks: {socketId -> {price,qty,name}} }
 const rooms = {};
 
 function getRoom(roomId) {
@@ -35,6 +37,7 @@ function getRoom(roomId) {
       trades: [],
       players: {},
       mm: null,
+      orderBook: { bids: {}, asks: {} },
     };
   }
   return rooms[roomId];
@@ -107,6 +110,7 @@ function broadcast(roomId) {
     trades: room.trades.slice(-30),
     lastPrice: lastPrice(room),
     mm: mmPublic(room),
+    orderBook: room.orderBook,
   });
 }
 
@@ -117,6 +121,7 @@ function startGame(roomId, rawSettings) {
   room.game = newGame(room.settings);
   room.trades = [];
   room.mm = null;
+  room.orderBook = { bids: {}, asks: {} };
   for (const p of Object.values(room.players)) {
     p.cash = START_CASH;
     p.position = 0;
@@ -235,63 +240,35 @@ io.on('connection', (socket) => {
     startGame(roomId, incoming);
   });
 
+  // MM mode: non-maker trades at the fixed bid/ask set by the maker.
   socket.on('trade', ({ side, qty, price }) => {
     if (!roomId) return;
     const room = getRoom(roomId);
     const p = room.players[socket.id];
     if (!p) return;
     if (isClosed(room)) return;
+    if (!room.mm || room.mm.phase !== 'trading') return;
+    if (socket.id === room.mm.makerId) return;
 
     qty = Math.max(1, Math.min(100, parseInt(qty, 10) || 0));
-    price = parseFloat(price);
-    if (!isFinite(price) || price < 0) return;
+    if (side === 'buy') price = room.mm.ask;
+    else if (side === 'sell') price = room.mm.bid;
+    else return;
 
-    // In MM mode during trading phase, non-makers must trade at bid/ask.
-    if (room.mm?.phase === 'trading' && socket.id !== room.mm.makerId) {
-      if (side === 'buy') price = room.mm.ask;
-      else if (side === 'sell') price = room.mm.bid;
-
-      // The market maker takes the other side automatically.
-      const maker = room.players[room.mm.makerId];
-      if (maker) {
-        const cost = qty * price;
-        if (side === 'buy') {
-          if (p.cash < cost) return;
-          p.cash -= cost;
-          p.position += qty;
-          maker.cash += cost;
-          maker.position -= qty;
-        } else {
-          p.cash += cost;
-          p.position -= qty;
-          maker.cash -= cost;
-          maker.position += qty;
-        }
-        room.trades.push({
-          round: room.game.round,
-          trader: p.name,
-          side,
-          qty,
-          price: Math.round(price * 100) / 100,
-          ts: Date.now(),
-          mmRound: true,
-        });
-        broadcast(roomId);
-        return;
-      }
-    }
-
-    // Normal (non-MM) trade vs the house.
+    const maker = room.players[room.mm.makerId];
+    if (!maker) return;
     const cost = qty * price;
     if (side === 'buy') {
       if (p.cash < cost) return;
       p.cash -= cost;
       p.position += qty;
-    } else if (side === 'sell') {
+      maker.cash += cost;
+      maker.position -= qty;
+    } else {
       p.cash += cost;
       p.position -= qty;
-    } else {
-      return;
+      maker.cash -= cost;
+      maker.position += qty;
     }
     room.trades.push({
       round: room.game.round,
@@ -300,7 +277,87 @@ io.on('connection', (socket) => {
       qty,
       price: Math.round(price * 100) / 100,
       ts: Date.now(),
+      mmRound: true,
     });
+    broadcast(roomId);
+  });
+
+  // Open-outcry: post a resting bid or ask (replaces any previous one on that side).
+  socket.on('postOrder', ({ side, qty, price }) => {
+    if (!roomId) return;
+    const room = getRoom(roomId);
+    const p = room.players[socket.id];
+    if (!p) return;
+    if (isClosed(room)) return;
+    if (room.settings.marketMaking) return;
+
+    qty = Math.max(1, Math.min(100, parseInt(qty, 10) || 0));
+    price = Math.round(parseFloat(price) * 100) / 100;
+    if (!isFinite(price) || price < 0) return;
+    if (side !== 'bid' && side !== 'ask') return;
+
+    room.orderBook[side === 'bid' ? 'bids' : 'asks'][socket.id] = { price, qty, name: p.name };
+    broadcast(roomId);
+  });
+
+  // Open-outcry: hit another player's resting order — executes immediately.
+  socket.on('takeOrder', ({ side, targetId }) => {
+    if (!roomId) return;
+    const room = getRoom(roomId);
+    const taker = room.players[socket.id];
+    if (!taker) return;
+    if (isClosed(room)) return;
+    if (room.settings.marketMaking) return;
+    if (targetId === socket.id) return;
+
+    const book = side === 'bid' ? room.orderBook.bids : room.orderBook.asks;
+    const order = book[targetId];
+    if (!order) return;
+
+    const maker = room.players[targetId];
+    if (!maker) return;
+
+    const { price, qty } = order;
+    const cost = qty * price;
+
+    if (side === 'bid') {
+      // Taker is selling into a resting bid: taker goes short, maker goes long.
+      taker.cash += cost;
+      taker.position -= qty;
+      maker.cash -= cost;
+      maker.position += qty;
+    } else {
+      // Taker is buying a resting ask: taker goes long, maker goes short.
+      if (taker.cash < cost) return;
+      taker.cash -= cost;
+      taker.position += qty;
+      maker.cash += cost;
+      maker.position -= qty;
+    }
+
+    delete book[targetId];
+
+    room.trades.push({
+      round: room.game.round,
+      buyer: side === 'ask' ? taker.name : maker.name,
+      seller: side === 'bid' ? taker.name : maker.name,
+      qty,
+      price: Math.round(price * 100) / 100,
+      ts: Date.now(),
+    });
+    broadcast(roomId);
+  });
+
+  // Open-outcry: cancel your own resting order.
+  socket.on('cancelOrder', ({ side }) => {
+    if (!roomId) return;
+    const room = getRoom(roomId);
+    if (!room.players[socket.id]) return;
+    if (room.settings.marketMaking) return;
+    if (side !== 'bid' && side !== 'ask') return;
+
+    const book = side === 'bid' ? room.orderBook.bids : room.orderBook.asks;
+    delete book[socket.id];
     broadcast(roomId);
   });
 
@@ -349,6 +406,7 @@ io.on('connection', (socket) => {
 
     room.game.round += 1;
     room.mm = null;
+    room.orderBook = { bids: {}, asks: {} };
 
     if (isClosed(room)) {
       settleAll(room);

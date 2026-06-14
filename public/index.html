@@ -146,6 +146,21 @@
           <button id="sell-btn" class="btn-sell">SELL</button>
         </div>
       </div>
+      <div id="your-orders" class="your-orders"></div>
+      <div id="order-book" class="order-book hidden">
+        <h2 style="margin-top:24px;">Order Book</h2>
+        <div class="ob-grid">
+          <div class="ob-col">
+            <div class="ob-header ob-bid-header">Bids</div>
+            <div id="ob-bids"></div>
+          </div>
+          <div class="ob-col">
+            <div class="ob-header ob-ask-header">Asks</div>
+            <div id="ob-asks"></div>
+          </div>
+        </div>
+      </div>
+
       <div id="trade-msg" class="trade-msg"></div>
       <div class="you-stats">
         <span>Cash: <b id="your-cash">—</b></span>
