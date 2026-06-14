@@ -126,10 +126,16 @@ function startGame(roomId, rawSettings) {
     p.cash = START_CASH;
     p.position = 0;
   }
-  for (const sid of Object.keys(room.players)) {
-    const hint = pickHintFor(room, sid);
-    io.to(sid).emit('hints', hint ? [hint] : []);
-  }
+  // Assign hints without replacement: shuffle the hint cards and deal them out,
+  // cycling back to the start if there are more players than hint types.
+  const cards = room.game.hintCards;
+  const shuffled = cards.slice().sort(() => Math.random() - 0.5);
+  const playerIds = Object.keys(room.players);
+  playerIds.forEach((sid, i) => {
+    const card = shuffled[i % shuffled.length];
+    if (room.players[sid]) room.players[sid].hintKey = card.key;
+    io.to(sid).emit('hints', card ? [card] : []);
+  });
   io.to(roomId).emit('gameStarted');
   broadcast(roomId);
 
