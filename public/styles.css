@@ -235,6 +235,13 @@ main {
 .toggle-title { display: block; font-size: 14px; font-weight: 600; color: var(--text); }
 .toggle-desc { display: block; font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.4; }
 
+/* ---------- MM overlays (transparent backdrop — game stays visible) ---------- */
+.mm-overlay {
+  background: rgba(5, 8, 14, 0.55);
+  align-items: flex-start;
+  padding-top: 80px;
+}
+
 /* ---------- Bid overlay ---------- */
 .bid-box {
   background: var(--panel);
@@ -302,6 +309,13 @@ main {
   background: var(--gold); color: #000;
   border-radius: 3px; padding: 1px 4px; margin-left: 4px; vertical-align: middle;
 }
+
+/* ---------- Round countdown ---------- */
+.round-countdown {
+  font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums;
+  color: var(--muted); min-width: 36px; text-align: right;
+}
+.round-countdown.countdown-urgent { color: var(--red); }
 
 /* ---------- Order book ---------- */
 .order-book { margin-top: 24px; }

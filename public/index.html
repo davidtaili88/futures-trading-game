@@ -34,6 +34,12 @@
       <input id="num-rounds" type="range" min="1" max="20" value="5" />
       <p class="hint-text" id="rounds-note"></p>
 
+      <label class="field-label" id="round-duration-label" for="round-duration">
+        Round duration: <b id="round-duration-val">60s</b>
+      </label>
+      <input id="round-duration" type="range" min="0" max="300" step="5" value="60" />
+      <p class="hint-text" id="round-duration-note">Round advances automatically after 60 seconds. Set to 0 for manual-only.</p>
+
       <label class="field-label">Game mode</label>
       <div class="toggle-row">
         <input type="checkbox" id="mm-mode" />
@@ -54,7 +60,7 @@
   </div>
 
   <!-- Market making bid overlay -->
-  <div id="bid-overlay" class="overlay hidden">
+  <div id="bid-overlay" class="overlay mm-overlay hidden">
     <div class="bid-box">
       <h2>📊 Market Making Bid</h2>
       <p class="bid-sub">Enter the spread margin you're willing to quote.<br>Lowest margin wins — you become the market maker.</p>
@@ -70,7 +76,7 @@
   </div>
 
   <!-- Market maker sets their prices -->
-  <div id="quote-overlay" class="overlay hidden">
+  <div id="quote-overlay" class="overlay mm-overlay hidden">
     <div class="bid-box">
       <h2>🏦 You are the Market Maker!</h2>
       <p class="bid-sub" id="quote-sub">Set the bid and ask prices for this round. All other players will trade at your prices.</p>
@@ -80,8 +86,8 @@
           <input id="quote-bid" type="number" min="0" step="0.5" placeholder="e.g. 48" />
         </label>
         <label class="quote-label">
-          Ask (players can BUY at)
-          <input id="quote-ask" type="number" min="0" step="0.5" placeholder="e.g. 52" />
+          Ask (auto = bid + margin)
+          <input id="quote-ask" type="number" min="0" step="0.5" placeholder="—" readonly />
         </label>
       </div>
       <div id="quote-error" class="bid-status"></div>
@@ -90,7 +96,7 @@
   </div>
 
   <!-- Waiting for market maker to set prices -->
-  <div id="quote-wait-overlay" class="overlay hidden">
+  <div id="quote-wait-overlay" class="overlay mm-overlay hidden">
     <div class="bid-box">
       <h2>⏳ Waiting for Market Maker</h2>
       <p class="bid-sub" id="quote-wait-sub">is setting the bid/ask prices…</p>
@@ -100,6 +106,7 @@
   <header>
     <div class="brand">📈 Trading Games v1</div>
     <div class="controls">
+      <span id="round-countdown" class="round-countdown hidden"></span>
       <button id="next-round-btn" class="btn-primary">Next Round ▶</button>
       <button id="restart-btn" class="btn-secondary">↻ Restart Game</button>
     </div>

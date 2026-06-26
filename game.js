@@ -128,37 +128,25 @@ const CONTRACTS = [
   },
 ];
 
-// Monte-Carlo hint computation against the theoretical single-asset
-// distribution, so a single hint never gives away the realized draw.
-function computeHints(contract, assetClass, numAssets) {
-  const SAMPLES = 20000;
-  let mn = Infinity, mx = -Infinity, total = 0;
-  for (let s = 0; s < SAMPLES; s++) {
-    const vals = new Array(numAssets);
-    for (let i = 0; i < numAssets; i++) vals[i] = assetClass.sampleValue();
-    const v = contract.settle(vals);
-    if (v < mn) mn = v;
-    if (v > mx) mx = v;
-    total += v;
-  }
-  const mean = total / SAMPLES;
-  return {
-    min: Math.round(mn),
-    max: Math.round(mx),
-    mean: Math.round((total / SAMPLES) * 100) / 100,
-    range: Math.round(mx - mn),
-  };
-}
-
-function makeHintCards(hints, assets) {
+function makeHintCards(contract, assets) {
   const vals = assets.map((a) => a.value);
-  const assetRange = Math.max(...vals) - Math.min(...vals);
-  return [
-    { key: 'min', label: 'Minimum Value', value: hints.min },
-    { key: 'max', label: 'Maximum Value', value: hints.max },
-    { key: 'mean', label: 'Mean (Expected) Value', value: hints.mean },
-    { key: 'range', label: 'Asset Range (Max − Min)', value: assetRange },
+  const mn = Math.min(...vals);
+  const mx = Math.max(...vals);
+  const mean = Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 100) / 100;
+  const range = mx - mn;
+
+  const cards = [
+    { key: 'min', label: 'Asset Min', value: mn },
+    { key: 'max', label: 'Asset Max', value: mx },
+    { key: 'mean', label: 'Asset Mean', value: mean },
   ];
+
+  // Range hint is identical to settlement / numAssets for high_low_spread — exclude it.
+  if (contract.id !== 'high_low_spread') {
+    cards.push({ key: 'range', label: 'Asset Range (Max − Min)', value: range });
+  }
+
+  return cards;
 }
 
 // Validate + clamp incoming settings to safe bounds.
@@ -176,7 +164,7 @@ export function normalizeSettings(s = {}) {
 }
 
 export function defaultSettings() {
-  return { assetClass: 'cards', numAssets: 5, numRounds: 5, contractId: null };
+  return { assetClass: 'cards', numAssets: 5, numRounds: 5, contractId: null, roundDuration: 60 };
 }
 
 // Expose contract metadata for the settings UI.
@@ -199,8 +187,7 @@ export function newGame(rawSettings) {
     : CONTRACTS[Math.floor(Math.random() * CONTRACTS.length)];
   const assets = cls.draw(settings.numAssets);
   const settlement = contract.settle(assets.map((a) => a.value));
-  const hints = computeHints(contract, cls, settings.numAssets);
-  const hintCards = makeHintCards(hints, assets);
+  const hintCards = makeHintCards(contract, assets);
   return {
     settings,
     contract: {

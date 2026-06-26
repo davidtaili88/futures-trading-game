@@ -43,11 +43,13 @@ socket.on('config', ({ assetClasses: classes, contracts: ctrs, current }) => {
   chosenClass = current.assetClass;
   chosenContractId = current.contractId;
   $('mm-mode').checked = !!current.marketMaking;
+  $('round-duration').value = current.roundDuration ?? 60;
   renderAssetClassButtons();
   renderContractButtons();
   $('num-assets').value = current.numAssets;
   $('num-rounds').value = current.numRounds;
   syncSettingsLabels();
+  syncRoundDurationLabel();
 });
 
 function renderAssetClassButtons() {
@@ -102,8 +104,17 @@ function syncSettingsLabels() {
   $('rounds-note').textContent = note;
 }
 
+function syncRoundDurationLabel() {
+  const v = parseInt($('round-duration').value, 10);
+  $('round-duration-val').textContent = v === 0 ? 'manual' : `${v}s`;
+  $('round-duration-note').textContent = v === 0
+    ? 'Round only advances when someone clicks Next Round.'
+    : `Round advances automatically after ${v} seconds. Players can still click Next Round early.`;
+}
+
 $('num-assets').addEventListener('input', syncSettingsLabels);
 $('num-rounds').addEventListener('input', syncSettingsLabels);
+$('round-duration').addEventListener('input', syncRoundDurationLabel);
 $('start-btn').addEventListener('click', startGame);
 $('name-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') startGame(); });
 
@@ -127,6 +138,7 @@ function applySettings() {
     numAssets: parseInt($('num-assets').value, 10),
     numRounds: parseInt($('num-rounds').value, 10),
     marketMaking: $('mm-mode').checked,
+    roundDuration: parseInt($('round-duration').value, 10),
   });
   $('settings-overlay').classList.add('hidden');
 }
@@ -185,9 +197,12 @@ socket.on('bidPhaseResolved', ({ makerName, margin }) => {
   $('quote-wait-overlay').classList.remove('hidden');
 });
 
+let myWinMargin = null;
+
 socket.on('setMarketPrompt', ({ margin }) => {
+  myWinMargin = margin;
   $('quote-wait-overlay').classList.add('hidden');
-  $('quote-sub').textContent = `You won with margin ${margin}. Set your bid and ask prices — other players trade at these.`;
+  $('quote-sub').textContent = `You won with margin ${margin}. Your spread must be exactly ${margin} — set any bid price and ask will be bid + ${margin}.`;
   $('quote-bid').value = '';
   $('quote-ask').value = '';
   $('quote-error').textContent = '';
@@ -201,12 +216,20 @@ socket.on('marketSet', ({ makerName, bid, ask }) => {
   msg(`${makerName} set market — Bid ${bid} / Ask ${ask}`);
 });
 
+$('quote-bid').addEventListener('input', () => {
+  const bid = parseFloat($('quote-bid').value);
+  if (isFinite(bid) && myWinMargin != null) {
+    $('quote-ask').value = Math.round((bid + myWinMargin) * 100) / 100;
+  }
+});
+
 $('quote-submit-btn').addEventListener('click', () => {
   const bid = parseFloat($('quote-bid').value);
   const ask = parseFloat($('quote-ask').value);
   if (!isFinite(bid) || bid < 0) { $('quote-error').textContent = 'Enter a valid bid price.'; return; }
   if (!isFinite(ask) || ask < 0) { $('quote-error').textContent = 'Enter a valid ask price.'; return; }
-  if (ask <= bid) { $('quote-error').textContent = 'Ask must be higher than bid.'; return; }
+  const spread = Math.round((ask - bid) * 100) / 100;
+  if (spread !== myWinMargin) { $('quote-error').textContent = `Spread must be exactly ${myWinMargin} (your winning bid).`; return; }
   socket.emit('setMarket', { bid, ask });
   $('quote-submit-btn').disabled = true;
   $('quote-overlay').classList.add('hidden');
@@ -243,6 +266,32 @@ function updateBidOverlay(mm, players) {
   if (mm.bidderIds.length > 0 && remaining.length > 0) {
     $('bid-force-btn').classList.remove('hidden');
   }
+}
+
+// ---------- Countdown ticker ----------
+let countdownEndsAt = null;
+let countdownInterval = null;
+
+function startCountdown(endsAt) {
+  countdownEndsAt = endsAt;
+  if (countdownInterval) clearInterval(countdownInterval);
+  if (!endsAt) {
+    $('round-countdown').classList.add('hidden');
+    return;
+  }
+  function tick() {
+    const remaining = Math.max(0, Math.ceil((countdownEndsAt - Date.now()) / 1000));
+    const el = $('round-countdown');
+    el.textContent = `${remaining}s`;
+    el.classList.remove('hidden');
+    el.className = 'round-countdown' + (remaining <= 10 ? ' countdown-urgent' : '');
+    if (remaining === 0) {
+      clearInterval(countdownInterval);
+      countdownInterval = null;
+    }
+  }
+  tick();
+  countdownInterval = setInterval(tick, 250);
 }
 
 // ---------- Controls ----------
@@ -286,9 +335,10 @@ function msg(t) {
 }
 
 // ---------- State render ----------
-socket.on('state', ({ game, players, trades, lastPrice, mm, orderBook }) => {
+socket.on('state', ({ game, players, trades, lastPrice, mm, orderBook, roundEndsAt }) => {
   currentMM = mm;
   isMMMode = game.marketMaking;
+  startCountdown(game.settled ? null : roundEndsAt);
   renderContract(game);
   renderPlayers(players);
   renderTape(trades);

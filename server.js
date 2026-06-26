@@ -20,12 +20,16 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const START_CASH = 1000;
 
-// rooms[roomId] = { settings, game, trades, players, mm, orderBook }
+// rooms[roomId] = { settings, game, trades, players, playersByName, mm, orderBook, roundTimer, roundEndsAt }
+// players = { socketId -> playerObj } — active socket sessions
+// playersByName = { name -> {cash, position, hintKey} } — persistent state across reconnects
 // mm = market making state for the current round:
 //   { phase: 'bidding'|'trading'|null, bids: {socketId->margin},
 //     makerId, bid, ask }
 // orderBook = open-outcry resting orders (non-MM mode only):
 //   { bids: {socketId -> {price,qty,name}}, asks: {socketId -> {price,qty,name}} }
+// roundTimer = active setTimeout handle for auto-advancing the round (null if none)
+// roundEndsAt = epoch ms when the current round timer expires (null if no timer)
 const rooms = {};
 
 function getRoom(roomId) {
@@ -36,11 +40,54 @@ function getRoom(roomId) {
       game: newGame(settings),
       trades: [],
       players: {},
+      playersByName: {},
       mm: null,
       orderBook: { bids: {}, asks: {} },
+      roundTimer: null,
+      roundEndsAt: null,
     };
   }
   return rooms[roomId];
+}
+
+function clearRoundTimer(room) {
+  if (room.roundTimer) {
+    clearTimeout(room.roundTimer);
+    room.roundTimer = null;
+  }
+  room.roundEndsAt = null;
+}
+
+function startRoundTimer(roomId) {
+  const room = rooms[roomId];
+  clearRoundTimer(room);
+  const duration = room.settings.roundDuration;
+  if (!duration || duration <= 0 || room.settings.marketMaking) return;
+  room.roundEndsAt = Date.now() + duration * 1000;
+  room.roundTimer = setTimeout(() => {
+    room.roundTimer = null;
+    advanceRound(roomId);
+  }, duration * 1000);
+}
+
+function advanceRound(roomId) {
+  const room = rooms[roomId];
+  if (!room || isClosed(room)) return;
+  clearRoundTimer(room);
+  room.game.round += 1;
+  room.mm = null;
+  room.orderBook = { bids: {}, asks: {} };
+  if (isClosed(room)) {
+    settleAll(room);
+    broadcast(roomId);
+    return;
+  }
+  broadcast(roomId);
+  if (room.settings.marketMaking) {
+    openBidPhase(roomId);
+  } else {
+    startRoundTimer(roomId);
+  }
 }
 
 function isClosed(room) {
@@ -111,6 +158,7 @@ function broadcast(roomId) {
     lastPrice: lastPrice(room),
     mm: mmPublic(room),
     orderBook: room.orderBook,
+    roundEndsAt: room.roundEndsAt,
   });
 }
 
@@ -118,13 +166,18 @@ function startGame(roomId, rawSettings) {
   const room = getRoom(roomId);
   room.settings = normalizeSettings(rawSettings);
   room.settings.marketMaking = !!rawSettings.marketMaking;
+  const rd = parseInt(rawSettings.roundDuration, 10);
+  room.settings.roundDuration = Number.isFinite(rd) && rd >= 0 ? Math.min(rd, 300) : 0;
   room.game = newGame(room.settings);
   room.trades = [];
   room.mm = null;
   room.orderBook = { bids: {}, asks: {} };
+  room.playersByName = {};
+  clearRoundTimer(room);
   for (const p of Object.values(room.players)) {
     p.cash = START_CASH;
     p.position = 0;
+    room.playersByName[p.name] = { cash: p.cash, position: p.position, hintKey: null };
   }
   // Assign hints without replacement: shuffle the hint cards and deal them out,
   // cycling back to the start if there are more players than hint types.
@@ -145,6 +198,11 @@ function startGame(roomId, rawSettings) {
     broadcast(roomId);
     openBidPhase(roomId);
   }
+}
+
+function syncPlayerByName(room, socketId) {
+  const p = room.players[socketId];
+  if (p) room.playersByName[p.name] = { cash: p.cash, position: p.position, hintKey: p.hintKey };
 }
 
 function pickHintFor(room, socketId) {
@@ -227,16 +285,41 @@ io.on('connection', (socket) => {
     if (!roomId) return;
     const room = getRoom(roomId);
     const clean = String(name || '').trim().slice(0, 20) || `Trader-${socket.id.slice(0, 4)}`;
-    room.players[socket.id] = {
-      id: socket.id,
-      name: clean,
-      cash: START_CASH,
-      position: 0,
-      connected: true,
-      hintKey: null,
-    };
-    const hint = pickHintFor(room, socket.id);
-    socket.emit('hints', hint ? [hint] : []);
+
+    const saved = room.playersByName[clean];
+    if (saved) {
+      // Returning player with same name — restore their state.
+      // Remove any old socket entry for this name so there's no duplicate.
+      for (const [sid, p] of Object.entries(room.players)) {
+        if (p.name === clean && sid !== socket.id) delete room.players[sid];
+      }
+      room.players[socket.id] = {
+        id: socket.id,
+        name: clean,
+        cash: saved.cash,
+        position: saved.position,
+        connected: true,
+        hintKey: saved.hintKey,
+      };
+      const hintCard = saved.hintKey
+        ? room.game.hintCards.find((c) => c.key === saved.hintKey) ?? null
+        : null;
+      socket.emit('hints', hintCard ? [hintCard] : []);
+    } else {
+      // New player — fresh state.
+      room.players[socket.id] = {
+        id: socket.id,
+        name: clean,
+        cash: START_CASH,
+        position: 0,
+        connected: true,
+        hintKey: null,
+      };
+      room.playersByName[clean] = { cash: START_CASH, position: 0, hintKey: null };
+      const hint = pickHintFor(room, socket.id);
+      socket.emit('hints', hint ? [hint] : []);
+    }
+
     socket.emit('joined', { id: socket.id, startCash: START_CASH });
     broadcast(roomId);
   });
@@ -285,6 +368,8 @@ io.on('connection', (socket) => {
       ts: Date.now(),
       mmRound: true,
     });
+    syncPlayerByName(room, socket.id);
+    syncPlayerByName(room, room.mm.makerId);
     broadcast(roomId);
   });
 
@@ -351,6 +436,8 @@ io.on('connection', (socket) => {
       price: Math.round(price * 100) / 100,
       ts: Date.now(),
     });
+    syncPlayerByName(room, socket.id);
+    syncPlayerByName(room, targetId);
     broadcast(roomId);
   });
 
@@ -391,7 +478,9 @@ io.on('connection', (socket) => {
     if (socket.id !== room.mm.makerId) return;
     bid = Math.round(parseFloat(bid) * 100) / 100;
     ask = Math.round(parseFloat(ask) * 100) / 100;
+    const spread = Math.round((ask - bid) * 100) / 100;
     if (!isFinite(bid) || !isFinite(ask) || bid < 0 || ask <= bid) return;
+    if (spread !== room.mm.margin) return;
     room.mm.bid = bid;
     room.mm.ask = ask;
     room.mm.phase = 'trading';
@@ -407,24 +496,7 @@ io.on('connection', (socket) => {
 
   socket.on('nextRound', () => {
     if (!roomId) return;
-    const room = getRoom(roomId);
-    if (isClosed(room)) return;
-
-    room.game.round += 1;
-    room.mm = null;
-    room.orderBook = { bids: {}, asks: {} };
-
-    if (isClosed(room)) {
-      settleAll(room);
-      broadcast(roomId);
-      return;
-    }
-
-    // Reveal the new asset first, then open bidding (or go straight to trading).
-    broadcast(roomId);
-    if (room.settings.marketMaking) {
-      openBidPhase(roomId);
-    }
+    advanceRound(roomId);
   });
 
   socket.on('restart', () => {
@@ -447,6 +519,7 @@ io.on('connection', (socket) => {
     const room = rooms[roomId];
     if (!room) return;
     if (room.players[socket.id]) {
+      syncPlayerByName(room, socket.id);
       room.players[socket.id].connected = false;
       broadcast(roomId);
     }
