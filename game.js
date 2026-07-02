@@ -135,10 +135,14 @@ function makeHintCards(contract, assets) {
   const mean = Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 100) / 100;
   const range = mx - mn;
 
-  const cards = [
-    { key: 'min', label: 'Asset Min', value: mn },
-    { key: 'max', label: 'Asset Max', value: mx },
-  ];
+  const hideMaxMin = contract.id === 'high_low_spread' || contract.id === 'max_plus_min';
+
+  const cards = [];
+
+  if (!hideMaxMin) {
+    cards.push({ key: 'min', label: 'Asset Min', value: mn });
+    cards.push({ key: 'max', label: 'Asset Max', value: mx });
+  }
 
   // Mean * numAssets = settlement for sum — too revealing.
   if (contract.id !== 'sum') {
