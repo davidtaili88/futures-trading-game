@@ -20,6 +20,16 @@ body {
   color: var(--text);
 }
 
+/* ---------- Info banner ---------- */
+.info-banner {
+  background: #1c2a1c;
+  border-bottom: 1px solid #2ea043;
+  color: #7ee08a;
+  font-size: 13px;
+  text-align: center;
+  padding: 7px 16px;
+}
+
 /* ---------- Join overlay ---------- */
 .overlay {
   position: fixed; inset: 0;

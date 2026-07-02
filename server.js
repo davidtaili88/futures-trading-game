@@ -500,7 +500,10 @@ io.on('connection', (socket) => {
       ? limit - p.position - existingExposure
       : limit + p.position - existingExposure;
     qty = Math.min(qty, Math.max(0, maxDelta));
-    if (qty <= 0) return;
+    if (qty <= 0) {
+      socket.emit('tradeError', `Position limit ±${limit} reached — order rejected.`);
+      return;
+    }
 
     const orderId = `${socket.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     room.orderBook[side === 'bid' ? 'bids' : 'asks'].push({ id: orderId, socketId: socket.id, price, qty, name: p.name });
@@ -528,15 +531,22 @@ io.on('connection', (socket) => {
     const { price, qty } = order;
     const cost = qty * price;
 
+    const limit = room.settings.positionLimit ?? 10;
     if (side === 'bid') {
-      if (!withinLimit(room, taker, -qty)) return;
+      if (!withinLimit(room, taker, -qty)) {
+        socket.emit('tradeError', `Position limit ±${limit} reached — cannot hit this bid.`);
+        return;
+      }
       if (!withinLimit(room, maker, +qty)) return;
       taker.cash += cost;
       taker.position -= qty;
       maker.cash -= cost;
       maker.position += qty;
     } else {
-      if (!withinLimit(room, taker, +qty)) return;
+      if (!withinLimit(room, taker, +qty)) {
+        socket.emit('tradeError', `Position limit ±${limit} reached — cannot lift this ask.`);
+        return;
+      }
       if (!withinLimit(room, maker, -qty)) return;
       taker.cash -= cost;
       taker.position += qty;

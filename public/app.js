@@ -290,7 +290,10 @@ function startCountdown(endsAt) {
   countdownEndsAt = endsAt;
   if (countdownInterval) clearInterval(countdownInterval);
   if (!endsAt) {
-    $('round-countdown').classList.add('hidden');
+    const el = $('round-countdown');
+    el.textContent = '0s';
+    el.className = 'round-countdown';
+    el.classList.remove('hidden');
     return;
   }
   function tick() {
@@ -349,11 +352,19 @@ function msg(t) {
   msg._t = setTimeout(() => { $('trade-msg').textContent = ''; }, 3500);
 }
 
+socket.on('tradeError', (text) => {
+  const el = $('trade-msg');
+  el.textContent = text;
+  el.style.color = 'var(--red)';
+  clearTimeout(msg._t);
+  msg._t = setTimeout(() => { el.textContent = ''; el.style.color = ''; }, 4000);
+});
+
 // ---------- State render ----------
 socket.on('state', ({ game, players, trades, lastPrice, mm, orderBook, roundEndsAt }) => {
   currentMM = mm;
   isMMMode = game.marketMaking;
-  startCountdown(game.settled ? null : roundEndsAt);
+  startCountdown(roundEndsAt);
   $('pos-limit-display').textContent = `±${game.positionLimit ?? 10}`;
 
   // If market is already open and we're a taker, dismiss any blocking overlays
