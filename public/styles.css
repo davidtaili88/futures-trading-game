@@ -314,8 +314,8 @@ main {
 
 /* ---------- Round countdown ---------- */
 .round-countdown {
-  font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums;
-  color: var(--muted); min-width: 36px; text-align: right;
+  font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums;
+  color: var(--muted); min-width: 52px; text-align: right;
 }
 .round-countdown.countdown-urgent { color: var(--red); }
 
