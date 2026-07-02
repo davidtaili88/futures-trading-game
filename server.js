@@ -41,6 +41,7 @@ function getRoom(roomId) {
       trades: [],
       players: {},
       playersByName: {},
+      hostId: null,
       mm: null,
       orderBook: { bids: {}, asks: {} },
       roundTimer: null,
@@ -48,6 +49,20 @@ function getRoom(roomId) {
     };
   }
   return rooms[roomId];
+}
+
+function assignHost(room, preferredId) {
+  if (preferredId && room.players[preferredId]?.connected) {
+    room.hostId = preferredId;
+    return;
+  }
+  // Fall back to first connected player.
+  const connected = connectedPlayerIds(room);
+  room.hostId = connected.length ? connected[0] : null;
+}
+
+function isHost(room, socketId) {
+  return room.hostId === socketId;
 }
 
 function clearRoundTimer(room) {
@@ -136,6 +151,7 @@ function playerList(room) {
     connected: p.connected,
     pnl: pnlFor(p, room),
     isMarketMaker: room.mm ? p.id === room.mm.makerId : false,
+    isHost: p.id === room.hostId,
   }));
 }
 
@@ -189,14 +205,14 @@ function startGame(roomId, rawSettings) {
     if (room.players[sid]) room.players[sid].hintKey = card.key;
     io.to(sid).emit('hints', card ? [card] : []);
   });
+  room.game.round = 1;
   io.to(roomId).emit('gameStarted');
   broadcast(roomId);
 
-  // In MM mode, immediately open bidding for round 1.
   if (room.settings.marketMaking) {
-    room.game.round = 1;
-    broadcast(roomId);
     openBidPhase(roomId);
+  } else {
+    startRoundTimer(roomId);
   }
 }
 
@@ -218,6 +234,59 @@ function settleAll(room) {
   for (const p of Object.values(room.players)) {
     p.cash += p.position * s;
     p.position = 0;
+  }
+}
+
+// Auto-match crossing orders in the open-outcry book.
+// Runs after every postOrder. Loops until no cross remains.
+function tryMatchOrders(room) {
+  while (true) {
+    const bidEntries = Object.entries(room.orderBook.bids);
+    const askEntries = Object.entries(room.orderBook.asks);
+    if (!bidEntries.length || !askEntries.length) break;
+
+    // Best bid = highest price; best ask = lowest price.
+    const [bidId, bestBid] = bidEntries.reduce((a, b) => b[1].price > a[1].price ? b : a);
+    const [askId, bestAsk] = askEntries.reduce((a, b) => b[1].price < a[1].price ? b : a);
+
+    if (bestBid.price < bestAsk.price) break; // no cross
+
+    // Same player can't cross with themselves.
+    if (bidId === askId) break;
+
+    // Trade at the resting (older) order's price — both are resting here,
+    // so use the bid price as the execution price (aggressor pays bid).
+    const execPrice = Math.round(bestBid.price * 100) / 100;
+    const execQty = Math.min(bestBid.qty, bestAsk.qty);
+
+    const buyer = room.players[bidId];
+    const seller = room.players[askId];
+    if (!buyer || !seller) break;
+
+    const cost = execQty * execPrice;
+    if (buyer.cash < cost) break; // buyer can't afford it — leave book as-is
+
+    buyer.cash -= cost;
+    buyer.position += execQty;
+    seller.cash += cost;
+    seller.position -= execQty;
+
+    room.trades.push({
+      round: room.game.round,
+      buyer: buyer.name,
+      seller: seller.name,
+      qty: execQty,
+      price: execPrice,
+      ts: Date.now(),
+    });
+    syncPlayerByName(room, bidId);
+    syncPlayerByName(room, askId);
+
+    // Reduce or remove the matched orders.
+    bestBid.qty -= execQty;
+    bestAsk.qty -= execQty;
+    if (bestBid.qty <= 0) delete room.orderBook.bids[bidId];
+    if (bestAsk.qty <= 0) delete room.orderBook.asks[askId];
   }
 }
 
@@ -278,6 +347,7 @@ io.on('connection', (socket) => {
       contracts: contractInfo(),
       current: room.settings,
       startCash: START_CASH,
+      gameInProgress: room.game.round > 0 && !isClosed(room),
     });
   });
 
@@ -320,12 +390,25 @@ io.on('connection', (socket) => {
       socket.emit('hints', hint ? [hint] : []);
     }
 
-    socket.emit('joined', { id: socket.id, startCash: START_CASH });
+    // First player to join becomes host.
+    if (!room.hostId) room.hostId = socket.id;
+
+    socket.emit('joined', { id: socket.id, startCash: START_CASH, isHost: room.hostId === socket.id });
+    broadcast(roomId);
+  });
+
+  socket.on('claimHost', () => {
+    if (!roomId) return;
+    const room = getRoom(roomId);
+    if (!room.players[socket.id]?.connected) return;
+    room.hostId = socket.id;
     broadcast(roomId);
   });
 
   socket.on('applySettings', (incoming) => {
     if (!roomId) return;
+    const room = getRoom(roomId);
+    if (!isHost(room, socket.id)) return;
     startGame(roomId, incoming);
   });
 
@@ -373,7 +456,8 @@ io.on('connection', (socket) => {
     broadcast(roomId);
   });
 
-  // Open-outcry: post a resting bid or ask (replaces any previous one on that side).
+  // Open-outcry: post a resting bid or ask (replaces any previous one on that side),
+  // then auto-match if a cross exists.
   socket.on('postOrder', ({ side, qty, price }) => {
     if (!roomId) return;
     const room = getRoom(roomId);
@@ -388,6 +472,7 @@ io.on('connection', (socket) => {
     if (side !== 'bid' && side !== 'ask') return;
 
     room.orderBook[side === 'bid' ? 'bids' : 'asks'][socket.id] = { price, qty, name: p.name };
+    tryMatchOrders(room);
     broadcast(roomId);
   });
 
@@ -491,16 +576,22 @@ io.on('connection', (socket) => {
   // Host can force-resolve bids early (not all players submitted).
   socket.on('resolveBids', () => {
     if (!roomId) return;
+    const room = getRoom(roomId);
+    if (!isHost(room, socket.id)) return;
     resolveBids(roomId);
   });
 
   socket.on('nextRound', () => {
     if (!roomId) return;
+    const room = getRoom(roomId);
+    if (!isHost(room, socket.id)) return;
     advanceRound(roomId);
   });
 
   socket.on('restart', () => {
     if (!roomId) return;
+    const room = getRoom(roomId);
+    if (!isHost(room, socket.id)) return;
     io.to(roomId).emit('openSettings');
   });
 
@@ -521,8 +612,10 @@ io.on('connection', (socket) => {
     if (room.players[socket.id]) {
       syncPlayerByName(room, socket.id);
       room.players[socket.id].connected = false;
-      broadcast(roomId);
     }
+    // If host disconnected, pass host to next connected player.
+    if (room.hostId === socket.id) assignHost(room, null);
+    broadcast(roomId);
     // If we're in bid phase and the disconnected player was the last one needed, resolve.
     if (room.mm?.phase === 'bidding') {
       const connected = connectedPlayerIds(room);

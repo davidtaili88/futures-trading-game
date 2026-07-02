@@ -207,7 +207,7 @@ export function newGame(rawSettings) {
   };
 }
 
-// Round 1 has no reveal. From round 2 onwards one asset is revealed per round.
+// Round N reveals N assets (round 1 reveals 1, round 2 reveals 2, etc.)
 export function revealedForRound(game) {
-  return Math.min(Math.max(0, game.round - 1), game.assets.length);
+  return Math.min(Math.max(0, game.round), game.assets.length);
 }

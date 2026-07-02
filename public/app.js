@@ -3,7 +3,7 @@ const socket = SOCKET_URL ? io(SOCKET_URL) : io();
 
 let myId = null;
 let startCash = 1000;
-const revealed = {};
+let amHost = false;
 
 const $ = (id) => document.getElementById(id);
 
@@ -36,12 +36,14 @@ let contracts = [];
 let chosenClass = 'cards';
 let chosenContractId = null;
 let hasJoined = false;
+let gameInProgress = false;
 
-socket.on('config', ({ assetClasses: classes, contracts: ctrs, current }) => {
+socket.on('config', ({ assetClasses: classes, contracts: ctrs, current, gameInProgress: inProgress }) => {
   assetClasses = classes;
   contracts = ctrs;
   chosenClass = current.assetClass;
   chosenContractId = current.contractId;
+  gameInProgress = !!inProgress;
   $('mm-mode').checked = !!current.marketMaking;
   $('round-duration').value = current.roundDuration ?? 60;
   renderAssetClassButtons();
@@ -50,6 +52,7 @@ socket.on('config', ({ assetClasses: classes, contracts: ctrs, current }) => {
   $('num-rounds').value = current.numRounds;
   syncSettingsLabels();
   syncRoundDurationLabel();
+  $('start-btn').textContent = gameInProgress ? 'Join Game' : 'Start Game';
 });
 
 function renderAssetClassButtons() {
@@ -123,11 +126,16 @@ function startGame() {
   if (!hasJoined) {
     socket.emit('join', name);
     hasJoined = true;
-    // Wait for server to confirm join before applying settings.
-    socket.once('joined', () => applySettings());
+    if (gameInProgress) {
+      // Join mid-game: don't apply settings, just close the overlay.
+      socket.once('joined', () => { $('settings-overlay').classList.add('hidden'); });
+    } else {
+      socket.once('joined', () => applySettings());
+    }
   } else {
     if (name) socket.emit('rename', name);
-    applySettings();
+    if (!gameInProgress) applySettings();
+    else $('settings-overlay').classList.add('hidden');
   }
 }
 
@@ -150,9 +158,10 @@ socket.on('openSettings', () => {
   $('quote-overlay').classList.add('hidden');
   $('quote-wait-overlay').classList.add('hidden');
 });
-socket.on('joined', ({ id, startCash: sc }) => {
+socket.on('joined', ({ id, startCash: sc, isHost: ih }) => {
   myId = id;
   startCash = sc;
+  amHost = !!ih;
   $('lobby-section').classList.remove('hidden');
 });
 
@@ -160,21 +169,17 @@ socket.on('joined', ({ id, startCash: sc }) => {
 let hintCards = [];
 socket.on('hints', (cards) => {
   hintCards = cards;
-  for (const c of cards) revealed[c.key] = false;
   renderHints();
 });
 
 function renderHints() {
   const wrap = $('hints');
   wrap.innerHTML = '';
-  if (!hintCards.length) { wrap.innerHTML = '<div class="muted">No hints available.</div>'; return; }
+  if (!hintCards.length) return;
   for (const c of hintCards) {
-    const isShown = revealed[c.key];
     const div = document.createElement('div');
-    div.className = 'hint-card ' + (isShown ? 'revealed' : 'hidden-state');
-    div.innerHTML = `<div class="hl">${c.label}</div><div class="hv">${isShown ? c.value : '•••'}</div>`;
-    div.title = isShown ? 'Click to hide' : 'Click to reveal';
-    div.addEventListener('click', () => { revealed[c.key] = !revealed[c.key]; renderHints(); });
+    div.className = 'hint-card revealed';
+    div.innerHTML = `<div class="hl">${c.label}</div><div class="hv">${c.value}</div>`;
     wrap.appendChild(div);
   }
 }
@@ -297,6 +302,7 @@ function startCountdown(endsAt) {
 // ---------- Controls ----------
 $('next-round-btn').addEventListener('click', () => socket.emit('nextRound'));
 $('restart-btn').addEventListener('click', () => socket.emit('restart'));
+$('claim-host-btn').addEventListener('click', () => socket.emit('claimHost'));
 
 // ---------- Trading ----------
 $('buy-btn').addEventListener('click', () => sendTrade('buy'));
@@ -339,6 +345,21 @@ socket.on('state', ({ game, players, trades, lastPrice, mm, orderBook, roundEnds
   currentMM = mm;
   isMMMode = game.marketMaking;
   startCountdown(game.settled ? null : roundEndsAt);
+
+  // If market is already open and we're a taker, dismiss any blocking overlays
+  // (handles late joiners who missed the bid/quote events).
+  if (mm?.phase === 'trading' && myId !== mm.makerId) {
+    $('bid-overlay').classList.add('hidden');
+    $('quote-wait-overlay').classList.add('hidden');
+  }
+
+  // Sync host status from player list.
+  amHost = players.some((p) => p.id === myId && p.isHost);
+
+  // Once game is in progress, update the button label for anyone still on the settings screen.
+  gameInProgress = game.round > 0 && !game.settled;
+  $('start-btn').textContent = gameInProgress ? 'Join Game' : 'Start Game';
+
   renderContract(game);
   renderPlayers(players);
   renderTape(trades);
@@ -351,6 +372,11 @@ socket.on('state', ({ game, players, trades, lastPrice, mm, orderBook, roundEnds
   const settled = game.settled;
   const isMaker = mm?.phase === 'trading' && myId === mm.makerId;
   const blocked = mm?.phase === 'bidding' || mm?.phase === 'quoting';
+
+  // Host-only controls.
+  $('next-round-btn').style.display = amHost ? '' : 'none';
+  $('restart-btn').style.display = amHost ? '' : 'none';
+  $('claim-host-btn').style.display = amHost ? 'none' : '';
 
   $('buy-btn').disabled = settled || blocked;
   $('sell-btn').disabled = settled || blocked;
@@ -452,8 +478,9 @@ function renderPlayers(players) {
     const posCls = p.position > 0 ? 'pos-pos' : p.position < 0 ? 'pos-neg' : '';
     const pnlCls = p.pnl > 0 ? 'pos-pos' : p.pnl < 0 ? 'pos-neg' : '';
     const mmTag = p.isMarketMaker ? ' <span class="mm-tag">MM</span>' : '';
+    const hostTag = p.isHost ? ' <span class="host-tag">HOST</span>' : '';
     tr.innerHTML = `
-      <td>${escapeHtml(p.name)}${mmTag}${p.connected ? '' : ' 💤'}</td>
+      <td>${escapeHtml(p.name)}${mmTag}${hostTag}${p.connected ? '' : ' 💤'}</td>
       <td>${p.cash}</td>
       <td class="${posCls}">${p.position}</td>
       <td class="${pnlCls}">${p.pnl >= 0 ? '+' : ''}${p.pnl}</td>

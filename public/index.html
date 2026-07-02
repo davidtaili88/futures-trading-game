@@ -107,6 +107,7 @@
     <div class="brand">📈 Trading Games v1</div>
     <div class="controls">
       <span id="round-countdown" class="round-countdown hidden"></span>
+      <button id="claim-host-btn" class="btn-secondary" style="display:none;">👑 Claim Host</button>
       <button id="next-round-btn" class="btn-primary">Next Round ▶</button>
       <button id="restart-btn" class="btn-secondary">↻ Restart Game</button>
     </div>
@@ -118,6 +119,8 @@
       <h2>The Contract</h2>
       <div id="contract-name" class="contract-name">—</div>
       <div id="contract-desc" class="contract-desc"></div>
+
+      <div id="hints" class="hints hints-inline"></div>
 
       <div class="round-status">
         <span id="round-label">Round 0</span>
@@ -133,11 +136,8 @@
       </div>
     </section>
 
-    <!-- Middle column: hints + trade ticket -->
+    <!-- Middle column: trade ticket -->
     <section class="panel">
-      <h2>Your Hints <span class="muted">(click to reveal / hide)</span></h2>
-      <div id="hints" class="hints"></div>
-
       <div id="mm-banner" class="mm-banner hidden"></div>
 
       <h2 style="margin-top:24px;">Trade Ticket</h2>
