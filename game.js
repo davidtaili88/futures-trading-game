@@ -138,10 +138,14 @@ function makeHintCards(contract, assets) {
   const cards = [
     { key: 'min', label: 'Asset Min', value: mn },
     { key: 'max', label: 'Asset Max', value: mx },
-    { key: 'mean', label: 'Asset Mean', value: mean },
   ];
 
-  // Range hint is identical to settlement / numAssets for high_low_spread — exclude it.
+  // Mean * numAssets = settlement for sum — too revealing.
+  if (contract.id !== 'sum') {
+    cards.push({ key: 'mean', label: 'Asset Mean', value: mean });
+  }
+
+  // Range * numAssets = settlement for high_low_spread — too revealing.
   if (contract.id !== 'high_low_spread') {
     cards.push({ key: 'range', label: 'Asset Range (Max − Min)', value: range });
   }
@@ -164,7 +168,7 @@ export function normalizeSettings(s = {}) {
 }
 
 export function defaultSettings() {
-  return { assetClass: 'cards', numAssets: 5, numRounds: 5, contractId: null, roundDuration: 60 };
+  return { assetClass: 'cards', numAssets: 5, numRounds: 5, contractId: null, roundDuration: 60, positionLimit: 10 };
 }
 
 // Expose contract metadata for the settings UI.

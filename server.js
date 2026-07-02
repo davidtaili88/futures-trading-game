@@ -18,7 +18,7 @@ const io = new Server(server, {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-const START_CASH = 1000;
+const START_CASH = 0;
 
 // rooms[roomId] = { settings, game, trades, players, playersByName, mm, orderBook, roundTimer, roundEndsAt }
 // players = { socketId -> playerObj } — active socket sessions
@@ -27,7 +27,7 @@ const START_CASH = 1000;
 //   { phase: 'bidding'|'trading'|null, bids: {socketId->margin},
 //     makerId, bid, ask }
 // orderBook = open-outcry resting orders (non-MM mode only):
-//   { bids: {socketId -> {price,qty,name}}, asks: {socketId -> {price,qty,name}} }
+//   { bids: [{id, socketId, price, qty, name}], asks: [{id, socketId, price, qty, name}] }
 // roundTimer = active setTimeout handle for auto-advancing the round (null if none)
 // roundEndsAt = epoch ms when the current round timer expires (null if no timer)
 const rooms = {};
@@ -39,11 +39,12 @@ function getRoom(roomId) {
       settings,
       game: newGame(settings),
       trades: [],
+      tradeCount: {},
       players: {},
       playersByName: {},
       hostId: null,
       mm: null,
-      orderBook: { bids: {}, asks: {} },
+      orderBook: { bids: [], asks: [] },
       roundTimer: null,
       roundEndsAt: null,
     };
@@ -63,6 +64,12 @@ function assignHost(room, preferredId) {
 
 function isHost(room, socketId) {
   return room.hostId === socketId;
+}
+
+function withinLimit(room, player, deltaPosition) {
+  const limit = room.settings.positionLimit ?? 10;
+  const newPos = player.position + deltaPosition;
+  return newPos >= -limit && newPos <= limit;
 }
 
 function clearRoundTimer(room) {
@@ -91,7 +98,7 @@ function advanceRound(roomId) {
   clearRoundTimer(room);
   room.game.round += 1;
   room.mm = null;
-  room.orderBook = { bids: {}, asks: {} };
+  room.orderBook = { bids: [], asks: [] };
   if (isClosed(room)) {
     settleAll(room);
     broadcast(roomId);
@@ -139,6 +146,7 @@ function publicGameState(room) {
     settled: closed,
     settlement: closed ? room.game.settlement : null,
     marketMaking: room.settings.marketMaking || false,
+    positionLimit: room.settings.positionLimit ?? 10,
   };
 }
 
@@ -184,10 +192,13 @@ function startGame(roomId, rawSettings) {
   room.settings.marketMaking = !!rawSettings.marketMaking;
   const rd = parseInt(rawSettings.roundDuration, 10);
   room.settings.roundDuration = Number.isFinite(rd) && rd >= 0 ? Math.min(rd, 300) : 0;
+  const pl = parseInt(rawSettings.positionLimit, 10);
+  room.settings.positionLimit = Number.isFinite(pl) && pl > 0 ? Math.min(pl, 1000) : 10;
   room.game = newGame(room.settings);
   room.trades = [];
+  room.tradeCount = {}; // playerName -> number of completed trades
   room.mm = null;
-  room.orderBook = { bids: {}, asks: {} };
+  room.orderBook = { bids: [], asks: [] };
   room.playersByName = {};
   clearRoundTimer(room);
   for (const p of Object.values(room.players)) {
@@ -229,11 +240,18 @@ function pickHintFor(room, socketId) {
   return card;
 }
 
+function recordTrade(room, ...playerNames) {
+  for (const name of playerNames) {
+    room.tradeCount[name] = (room.tradeCount[name] ?? 0) + 1;
+  }
+}
+
 function settleAll(room) {
   const s = room.game.settlement;
   for (const p of Object.values(room.players)) {
     p.cash += p.position * s;
     p.position = 0;
+    if ((room.tradeCount[p.name] ?? 0) < 2) p.cash -= 20;
   }
 }
 
@@ -241,31 +259,28 @@ function settleAll(room) {
 // Runs after every postOrder. Loops until no cross remains.
 function tryMatchOrders(room) {
   while (true) {
-    const bidEntries = Object.entries(room.orderBook.bids);
-    const askEntries = Object.entries(room.orderBook.asks);
-    if (!bidEntries.length || !askEntries.length) break;
+    if (!room.orderBook.bids.length || !room.orderBook.asks.length) break;
 
     // Best bid = highest price; best ask = lowest price.
-    const [bidId, bestBid] = bidEntries.reduce((a, b) => b[1].price > a[1].price ? b : a);
-    const [askId, bestAsk] = askEntries.reduce((a, b) => b[1].price < a[1].price ? b : a);
+    const bestBid = room.orderBook.bids.reduce((a, b) => b.price > a.price ? b : a);
+    const bestAsk = room.orderBook.asks.reduce((a, b) => b.price < a.price ? b : a);
 
     if (bestBid.price < bestAsk.price) break; // no cross
 
     // Same player can't cross with themselves.
-    if (bidId === askId) break;
+    if (bestBid.socketId === bestAsk.socketId) break;
 
-    // Trade at the resting (older) order's price — both are resting here,
-    // so use the bid price as the execution price (aggressor pays bid).
+    const buyer = room.players[bestBid.socketId];
+    const seller = room.players[bestAsk.socketId];
+    if (!buyer || !seller) break;
+
     const execPrice = Math.round(bestBid.price * 100) / 100;
     const execQty = Math.min(bestBid.qty, bestAsk.qty);
 
-    const buyer = room.players[bidId];
-    const seller = room.players[askId];
-    if (!buyer || !seller) break;
+    if (!withinLimit(room, buyer, +execQty)) break;
+    if (!withinLimit(room, seller, -execQty)) break;
 
     const cost = execQty * execPrice;
-    if (buyer.cash < cost) break; // buyer can't afford it — leave book as-is
-
     buyer.cash -= cost;
     buyer.position += execQty;
     seller.cash += cost;
@@ -279,14 +294,15 @@ function tryMatchOrders(room) {
       price: execPrice,
       ts: Date.now(),
     });
-    syncPlayerByName(room, bidId);
-    syncPlayerByName(room, askId);
+    recordTrade(room, buyer.name, seller.name);
+    syncPlayerByName(room, bestBid.socketId);
+    syncPlayerByName(room, bestAsk.socketId);
 
     // Reduce or remove the matched orders.
     bestBid.qty -= execQty;
     bestAsk.qty -= execQty;
-    if (bestBid.qty <= 0) delete room.orderBook.bids[bidId];
-    if (bestAsk.qty <= 0) delete room.orderBook.asks[askId];
+    if (bestBid.qty <= 0) room.orderBook.bids = room.orderBook.bids.filter(o => o.id !== bestBid.id);
+    if (bestAsk.qty <= 0) room.orderBook.asks = room.orderBook.asks.filter(o => o.id !== bestAsk.id);
   }
 }
 
@@ -431,12 +447,15 @@ io.on('connection', (socket) => {
     if (!maker) return;
     const cost = qty * price;
     if (side === 'buy') {
-      if (p.cash < cost) return;
+      if (!withinLimit(room, p, +qty)) return;
+      if (!withinLimit(room, maker, -qty)) return;
       p.cash -= cost;
       p.position += qty;
       maker.cash += cost;
       maker.position -= qty;
     } else {
+      if (!withinLimit(room, p, -qty)) return;
+      if (!withinLimit(room, maker, +qty)) return;
       p.cash += cost;
       p.position -= qty;
       maker.cash -= cost;
@@ -451,6 +470,7 @@ io.on('connection', (socket) => {
       ts: Date.now(),
       mmRound: true,
     });
+    recordTrade(room, p.name, room.players[room.mm.makerId]?.name);
     syncPlayerByName(room, socket.id);
     syncPlayerByName(room, room.mm.makerId);
     broadcast(roomId);
@@ -471,47 +491,61 @@ io.on('connection', (socket) => {
     if (!isFinite(price) || price < 0) return;
     if (side !== 'bid' && side !== 'ask') return;
 
-    room.orderBook[side === 'bid' ? 'bids' : 'asks'][socket.id] = { price, qty, name: p.name };
+    // Clamp qty so even if all resting orders on this side fill, position stays within limits.
+    const limit = room.settings.positionLimit ?? 10;
+    const existingExposure = (side === 'bid' ? room.orderBook.bids : room.orderBook.asks)
+      .filter(o => o.socketId === socket.id)
+      .reduce((sum, o) => sum + o.qty, 0);
+    const maxDelta = side === 'bid'
+      ? limit - p.position - existingExposure
+      : limit + p.position - existingExposure;
+    qty = Math.min(qty, Math.max(0, maxDelta));
+    if (qty <= 0) return;
+
+    const orderId = `${socket.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    room.orderBook[side === 'bid' ? 'bids' : 'asks'].push({ id: orderId, socketId: socket.id, price, qty, name: p.name });
     tryMatchOrders(room);
     broadcast(roomId);
   });
 
-  // Open-outcry: hit another player's resting order — executes immediately.
-  socket.on('takeOrder', ({ side, targetId }) => {
+  // Open-outcry: hit a specific resting order by its ID.
+  socket.on('takeOrder', ({ side, orderId }) => {
     if (!roomId) return;
     const room = getRoom(roomId);
     const taker = room.players[socket.id];
     if (!taker) return;
     if (isClosed(room)) return;
     if (room.settings.marketMaking) return;
-    if (targetId === socket.id) return;
 
-    const book = side === 'bid' ? room.orderBook.bids : room.orderBook.asks;
-    const order = book[targetId];
+    const list = side === 'bid' ? room.orderBook.bids : room.orderBook.asks;
+    const order = list.find(o => o.id === orderId);
     if (!order) return;
+    if (order.socketId === socket.id) return; // can't take own order
 
-    const maker = room.players[targetId];
+    const maker = room.players[order.socketId];
     if (!maker) return;
 
     const { price, qty } = order;
     const cost = qty * price;
 
     if (side === 'bid') {
-      // Taker is selling into a resting bid: taker goes short, maker goes long.
+      if (!withinLimit(room, taker, -qty)) return;
+      if (!withinLimit(room, maker, +qty)) return;
       taker.cash += cost;
       taker.position -= qty;
       maker.cash -= cost;
       maker.position += qty;
     } else {
-      // Taker is buying a resting ask: taker goes long, maker goes short.
-      if (taker.cash < cost) return;
+      if (!withinLimit(room, taker, +qty)) return;
+      if (!withinLimit(room, maker, -qty)) return;
       taker.cash -= cost;
       taker.position += qty;
       maker.cash += cost;
       maker.position -= qty;
     }
 
-    delete book[targetId];
+    room.orderBook[side === 'bid' ? 'bids' : 'asks'] =
+      list.filter(o => o.id !== orderId);
 
     room.trades.push({
       round: room.game.round,
@@ -521,21 +555,26 @@ io.on('connection', (socket) => {
       price: Math.round(price * 100) / 100,
       ts: Date.now(),
     });
+    recordTrade(room, taker.name, maker.name);
     syncPlayerByName(room, socket.id);
-    syncPlayerByName(room, targetId);
+    syncPlayerByName(room, order.socketId);
     broadcast(roomId);
   });
 
-  // Open-outcry: cancel your own resting order.
-  socket.on('cancelOrder', ({ side }) => {
+  // Open-outcry: cancel one of your own resting orders by ID.
+  socket.on('cancelOrder', ({ orderId }) => {
     if (!roomId) return;
     const room = getRoom(roomId);
     if (!room.players[socket.id]) return;
     if (room.settings.marketMaking) return;
-    if (side !== 'bid' && side !== 'ask') return;
 
-    const book = side === 'bid' ? room.orderBook.bids : room.orderBook.asks;
-    delete book[socket.id];
+    for (const side of ['bids', 'asks']) {
+      const before = room.orderBook[side].length;
+      room.orderBook[side] = room.orderBook[side].filter(
+        o => !(o.id === orderId && o.socketId === socket.id)
+      );
+      if (room.orderBook[side].length !== before) break;
+    }
     broadcast(roomId);
   });
 

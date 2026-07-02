@@ -46,12 +46,14 @@ socket.on('config', ({ assetClasses: classes, contracts: ctrs, current, gameInPr
   gameInProgress = !!inProgress;
   $('mm-mode').checked = !!current.marketMaking;
   $('round-duration').value = current.roundDuration ?? 60;
+  $('position-limit').value = current.positionLimit ?? 10;
   renderAssetClassButtons();
   renderContractButtons();
   $('num-assets').value = current.numAssets;
   $('num-rounds').value = current.numRounds;
   syncSettingsLabels();
   syncRoundDurationLabel();
+  syncPositionLimitLabel();
   $('start-btn').textContent = gameInProgress ? 'Join Game' : 'Start Game';
 });
 
@@ -115,9 +117,15 @@ function syncRoundDurationLabel() {
     : `Round advances automatically after ${v} seconds. Players can still click Next Round early.`;
 }
 
+function syncPositionLimitLabel() {
+  const v = parseInt($('position-limit').value, 10);
+  $('position-limit-val').textContent = `±${v}`;
+}
+
 $('num-assets').addEventListener('input', syncSettingsLabels);
 $('num-rounds').addEventListener('input', syncSettingsLabels);
 $('round-duration').addEventListener('input', syncRoundDurationLabel);
+$('position-limit').addEventListener('input', syncPositionLimitLabel);
 $('start-btn').addEventListener('click', startGame);
 $('name-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') startGame(); });
 
@@ -147,6 +155,7 @@ function applySettings() {
     numRounds: parseInt($('num-rounds').value, 10),
     marketMaking: $('mm-mode').checked,
     roundDuration: parseInt($('round-duration').value, 10),
+    positionLimit: parseInt($('position-limit').value, 10),
   });
   $('settings-overlay').classList.add('hidden');
 }
@@ -345,6 +354,7 @@ socket.on('state', ({ game, players, trades, lastPrice, mm, orderBook, roundEnds
   currentMM = mm;
   isMMMode = game.marketMaking;
   startCountdown(game.settled ? null : roundEndsAt);
+  $('pos-limit-display').textContent = `±${game.positionLimit ?? 10}`;
 
   // If market is already open and we're a taker, dismiss any blocking overlays
   // (handles late joiners who missed the bid/quote events).
@@ -526,27 +536,23 @@ function renderTape(trades) {
 function renderOrderBook(orderBook) {
   const { bids, asks } = orderBook;
 
-  // Bids: sorted highest price first.
-  const bidEntries = Object.entries(bids).sort(([, a], [, b]) => b.price - a.price);
-  // Asks: sorted lowest price first.
-  const askEntries = Object.entries(asks).sort(([, a], [, b]) => a.price - b.price);
+  // bids/asks are arrays sorted by price.
+  const sortedBids = [...bids].sort((a, b) => b.price - a.price);
+  const sortedAsks = [...asks].sort((a, b) => a.price - b.price);
 
-  function renderSide(containerId, entries, side) {
+  function renderSide(containerId, orders, side) {
     const el = $(containerId);
     el.innerHTML = '';
-    if (!entries.length) {
-      el.innerHTML = '<div class="ob-empty">—</div>';
-      return;
-    }
-    for (const [pid, order] of entries) {
-      const isMe = pid === myId;
+    if (!orders.length) { el.innerHTML = '<div class="ob-empty">—</div>'; return; }
+    for (const order of orders) {
+      const isMe = order.socketId === myId;
       const row = document.createElement('div');
       row.className = 'ob-row' + (isMe ? ' ob-mine' : '');
       const action = isMe
-        ? `<button class="ob-cancel-btn" data-side="${side}">Cancel</button>`
+        ? `<button class="ob-cancel-btn" data-order-id="${order.id}">Cancel</button>`
         : side === 'bid'
-          ? `<button class="ob-take-btn ob-sell-btn" data-side="bid" data-target="${pid}">SELL</button>`
-          : `<button class="ob-take-btn ob-buy-btn" data-side="ask" data-target="${pid}">BUY</button>`;
+          ? `<button class="ob-take-btn ob-sell-btn" data-side="bid" data-order-id="${order.id}">SELL</button>`
+          : `<button class="ob-take-btn ob-buy-btn" data-side="ask" data-order-id="${order.id}">BUY</button>`;
       row.innerHTML = `
         <span class="ob-name">${escapeHtml(order.name)}</span>
         <span class="ob-qty">${order.qty}</span>
@@ -557,15 +563,16 @@ function renderOrderBook(orderBook) {
     }
   }
 
-  renderSide('ob-bids', bidEntries, 'bid');
-  renderSide('ob-asks', askEntries, 'ask');
+  renderSide('ob-bids', sortedBids, 'bid');
+  renderSide('ob-asks', sortedAsks, 'ask');
 
   // Render your resting orders status.
-  const myBid = bids[myId];
-  const myAsk = asks[myId];
-  const parts = [];
-  if (myBid) parts.push(`Bid ${myBid.qty} @ ${myBid.price}`);
-  if (myAsk) parts.push(`Ask ${myAsk.qty} @ ${myAsk.price}`);
+  const myBids = bids.filter(o => o.socketId === myId);
+  const myAsks = asks.filter(o => o.socketId === myId);
+  const parts = [
+    ...myBids.map(o => `Bid ${o.qty} @ ${o.price}`),
+    ...myAsks.map(o => `Ask ${o.qty} @ ${o.price}`),
+  ];
   $('your-orders').textContent = parts.length ? `Your orders: ${parts.join(' · ')}` : '';
 }
 
@@ -574,9 +581,9 @@ $('order-book').addEventListener('click', (e) => {
   const takeBtn = e.target.closest('.ob-take-btn');
   const cancelBtn = e.target.closest('.ob-cancel-btn');
   if (takeBtn) {
-    socket.emit('takeOrder', { side: takeBtn.dataset.side, targetId: takeBtn.dataset.target });
+    socket.emit('takeOrder', { side: takeBtn.dataset.side, orderId: takeBtn.dataset.orderId });
   } else if (cancelBtn) {
-    socket.emit('cancelOrder', { side: cancelBtn.dataset.side });
+    socket.emit('cancelOrder', { orderId: cancelBtn.dataset.orderId });
   }
 });
 

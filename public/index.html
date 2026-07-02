@@ -40,6 +40,11 @@
       <input id="round-duration" type="range" min="0" max="300" step="5" value="60" />
       <p class="hint-text" id="round-duration-note">Round advances automatically after 60 seconds. Set to 0 for manual-only.</p>
 
+      <label class="field-label" for="position-limit">
+        Position limit: <b id="position-limit-val">±10</b>
+      </label>
+      <input id="position-limit" type="range" min="1" max="100" step="1" value="10" />
+
       <label class="field-label">Game mode</label>
       <div class="toggle-row">
         <input type="checkbox" id="mm-mode" />
@@ -173,6 +178,7 @@
         <span>Cash: <b id="your-cash">—</b></span>
         <span>Position: <b id="your-pos">—</b></span>
         <span>PnL: <b id="your-pnl">—</b></span>
+        <span class="muted">Limit: <b id="pos-limit-display">±10</b></span>
       </div>
     </section>
 
