@@ -209,7 +209,11 @@ function startGame(roomId, rawSettings) {
   // Assign hints without replacement: shuffle the hint cards and deal them out,
   // cycling back to the start if there are more players than hint types.
   const cards = room.game.hintCards;
-  const shuffled = cards.slice().sort(() => Math.random() - 0.5);
+  const shuffled = cards.slice();
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
   const playerIds = Object.keys(room.players);
   playerIds.forEach((sid, i) => {
     const card = shuffled[i % shuffled.length];
@@ -235,7 +239,17 @@ function syncPlayerByName(room, socketId) {
 function pickHintFor(room, socketId) {
   const cards = room.game.hintCards;
   if (!cards.length) return null;
-  const card = cards[Math.floor(Math.random() * cards.length)];
+  // Count how many connected players already hold each hint key.
+  const counts = Object.fromEntries(cards.map(c => [c.key, 0]));
+  for (const [sid, p] of Object.entries(room.players)) {
+    if (sid !== socketId && p.hintKey && counts[p.hintKey] !== undefined) {
+      counts[p.hintKey]++;
+    }
+  }
+  // Pick the hint key with the fewest holders (ties broken randomly).
+  const minCount = Math.min(...Object.values(counts));
+  const candidates = cards.filter(c => counts[c.key] === minCount);
+  const card = candidates[Math.floor(Math.random() * candidates.length)];
   if (room.players[socketId]) room.players[socketId].hintKey = card.key;
   return card;
 }
@@ -446,15 +460,22 @@ io.on('connection', (socket) => {
     const maker = room.players[room.mm.makerId];
     if (!maker) return;
     const cost = qty * price;
+    const limit = room.settings.positionLimit ?? 10;
     if (side === 'buy') {
-      if (!withinLimit(room, p, +qty)) return;
+      if (!withinLimit(room, p, +qty)) {
+        socket.emit('tradeError', `Position limit ±${limit} reached — cannot buy.`);
+        return;
+      }
       if (!withinLimit(room, maker, -qty)) return;
       p.cash -= cost;
       p.position += qty;
       maker.cash += cost;
       maker.position -= qty;
     } else {
-      if (!withinLimit(room, p, -qty)) return;
+      if (!withinLimit(room, p, -qty)) {
+        socket.emit('tradeError', `Position limit ±${limit} reached — cannot sell.`);
+        return;
+      }
       if (!withinLimit(room, maker, +qty)) return;
       p.cash += cost;
       p.position -= qty;
