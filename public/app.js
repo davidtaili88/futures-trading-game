@@ -63,6 +63,7 @@ function renderAssetClassButtons() {
   for (const c of assetClasses) {
     const b = document.createElement('button');
     b.className = 'seg-btn' + (c.key === chosenClass ? ' active' : '');
+    b.dataset.key = c.key;
     b.textContent = c.label;
     b.addEventListener('click', () => {
       chosenClass = c.key;

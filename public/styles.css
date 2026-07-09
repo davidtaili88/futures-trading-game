@@ -74,7 +74,10 @@ body {
   color: var(--text); font-size: 14px; font-weight: 600;
 }
 .seg-btn:hover { border-color: var(--accent); }
-.seg-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.seg-btn.active { border-color: var(--seg-color, var(--accent)); background: var(--seg-color, var(--accent)); color: #fff; }
+.seg-btn[data-key="cards"]  { --seg-color: #2ea043; }
+.seg-btn[data-key="dice"]   { --seg-color: #d8a33b; }
+.seg-btn[data-key="numbers"]{ --seg-color: #8957e5; }
 input[type="range"] { width: 100%; accent-color: var(--accent); margin: 4px 0; }
 #rounds-note { margin-top: 8px; min-height: 16px; }
 
