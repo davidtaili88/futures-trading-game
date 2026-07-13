@@ -466,7 +466,6 @@ io.on('connection', (socket) => {
         socket.emit('tradeError', `Position limit ±${limit} reached — cannot buy.`);
         return;
       }
-      if (!withinLimit(room, maker, -qty)) return;
       p.cash -= cost;
       p.position += qty;
       maker.cash += cost;
@@ -476,7 +475,6 @@ io.on('connection', (socket) => {
         socket.emit('tradeError', `Position limit ±${limit} reached — cannot sell.`);
         return;
       }
-      if (!withinLimit(room, maker, +qty)) return;
       p.cash += cost;
       p.position -= qty;
       maker.cash -= cost;
