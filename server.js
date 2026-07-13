@@ -509,7 +509,7 @@ io.on('connection', (socket) => {
 
     qty = Math.max(1, Math.min(100, parseInt(qty, 10) || 0));
     price = Math.round(parseFloat(price) * 100) / 100;
-    if (!isFinite(price) || price < 0) return;
+    if (!isFinite(price)) return;
     if (side !== 'bid' && side !== 'ask') return;
 
     // Clamp qty so even if all resting orders on this side fill, position stays within limits.
@@ -634,7 +634,7 @@ io.on('connection', (socket) => {
     bid = Math.round(parseFloat(bid) * 100) / 100;
     ask = Math.round(parseFloat(ask) * 100) / 100;
     const spread = Math.round((ask - bid) * 100) / 100;
-    if (!isFinite(bid) || !isFinite(ask) || bid < 0 || ask <= bid) return;
+    if (!isFinite(bid) || !isFinite(ask) || ask <= bid) return;
     if (spread !== room.mm.margin) return;
     room.mm.bid = bid;
     room.mm.ask = ask;

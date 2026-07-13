@@ -241,8 +241,8 @@ $('quote-bid').addEventListener('input', () => {
 $('quote-submit-btn').addEventListener('click', () => {
   const bid = parseFloat($('quote-bid').value);
   const ask = parseFloat($('quote-ask').value);
-  if (!isFinite(bid) || bid < 0) { $('quote-error').textContent = 'Enter a valid bid price.'; return; }
-  if (!isFinite(ask) || ask < 0) { $('quote-error').textContent = 'Enter a valid ask price.'; return; }
+  if (!isFinite(bid)) { $('quote-error').textContent = 'Enter a valid bid price.'; return; }
+  if (!isFinite(ask)) { $('quote-error').textContent = 'Enter a valid ask price.'; return; }
   const spread = Math.round((ask - bid) * 100) / 100;
   if (spread !== myWinMargin) { $('quote-error').textContent = `Spread must be exactly ${myWinMargin} (your winning bid).`; return; }
   socket.emit('setMarket', { bid, ask });
@@ -340,7 +340,7 @@ function sendTrade(side) {
   if (!isMMMode) {
     // Open-outcry: post a resting bid or ask.
     const price = parseFloat($('price').value);
-    if (!isFinite(price) || price < 0) { msg('Enter a valid price.'); return; }
+    if (!isFinite(price)) { msg('Enter a valid price.'); return; }
     const orderSide = side === 'buy' ? 'bid' : 'ask';
     socket.emit('postOrder', { side: orderSide, qty, price });
     msg(`${orderSide.toUpperCase()} ${qty} @ ${price} posted.`);
