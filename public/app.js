@@ -4,6 +4,11 @@ const socket = SOCKET_URL ? io(SOCKET_URL) : io();
 let myId = null;
 let startCash = 1000;
 let amHost = false;
+let hasJoined = false;
+let gameInProgress = false;
+// Name we've joined under, remembered so a reconnect/reload can auto-rejoin the
+// SAME player (restoring cash/position/hints) instead of appearing frozen.
+let joinedName = localStorage.getItem('tg_name_' + (location.hash.slice(1) || 'main')) || null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -14,6 +19,13 @@ socket.on('connect', () => {
   socket.emit('joinRoom', roomId);
   $('start-btn').textContent = 'Start Game';
   $('start-btn').disabled = false;
+  // If we were already in a game (reconnect/reload), rejoin under the same name
+  // and pull fresh state so the UI resumes instead of freezing.
+  if (joinedName) {
+    socket.emit('join', joinedName);
+    hasJoined = true;
+    socket.emit('resync');
+  }
 });
 
 socket.on('disconnect', () => {
@@ -35,8 +47,6 @@ let assetClasses = [];
 let contracts = [];
 let chosenClass = 'cards';
 let chosenContractId = null;
-let hasJoined = false;
-let gameInProgress = false;
 
 socket.on('config', ({ assetClasses: classes, contracts: ctrs, current, gameInProgress: inProgress }) => {
   assetClasses = classes;
@@ -133,9 +143,16 @@ $('position-limit').addEventListener('input', syncPositionLimitLabel);
 $('start-btn').addEventListener('click', startGame);
 $('name-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') startGame(); });
 
+function rememberName(name) {
+  if (!name) return;
+  joinedName = name;
+  try { localStorage.setItem('tg_name_' + roomId, name); } catch {}
+}
+
 function startGame() {
   const name = $('name-input').value.trim();
   if (!hasJoined) {
+    rememberName(name);
     socket.emit('join', name);
     hasJoined = true;
     if (gameInProgress) {
@@ -145,7 +162,7 @@ function startGame() {
       socket.once('joined', () => applySettings());
     }
   } else {
-    if (name) socket.emit('rename', name);
+    if (name) { rememberName(name); socket.emit('rename', name); }
     if (!gameInProgress) applySettings();
     else $('settings-overlay').classList.add('hidden');
   }
@@ -177,6 +194,9 @@ socket.on('joined', ({ id, startCash: sc, isHost: ih }) => {
   startCash = sc;
   amHost = !!ih;
   $('lobby-section').classList.remove('hidden');
+  // Auto-rejoin after a reconnect/reload: if a game is already running, drop
+  // straight back into it instead of sitting on the settings overlay.
+  if (gameInProgress) $('settings-overlay').classList.add('hidden');
 });
 
 // ---------- Hints ----------
@@ -328,7 +348,13 @@ function startCountdown(endsAt) {
 
 // ---------- Controls ----------
 $('next-round-btn').addEventListener('click', () => socket.emit('nextRound'));
-$('restart-btn').addEventListener('click', () => socket.emit('restart'));
+$('restart-btn').addEventListener('click', () => {
+  // Restart wipes the current game (new draw, cash/positions reset). Confirm so
+  // a host trying to recover a frozen game doesn't accidentally blow it away —
+  // a reload auto-resumes the existing game without resetting.
+  if (gameInProgress && !confirm('Start a NEW game? This resets all cash, positions, and deals fresh cards. To just recover a frozen game, reload the page instead.')) return;
+  socket.emit('restart');
+});
 $('claim-host-btn').addEventListener('click', () => socket.emit('claimHost'));
 
 // ---------- Trading ----------

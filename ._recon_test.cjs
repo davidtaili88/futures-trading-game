@@ -1,0 +1,26 @@
+const { io } = require('./node_modules/socket.io/client-dist/socket.io.js');
+const URL='http://localhost:3000';
+const wait=(s,e)=>new Promise(r=>s.once(e,r));
+const mk=()=>io(URL,{forceNew:true, transports:['websocket']});
+(async()=>{
+  const host=mk();
+  await wait(host,'connect');
+  host.emit('joinRoom','main'); await wait(host,'config');
+  host.emit('join','Alice'); await wait(host,'joined');
+  host.emit('applySettings',{assetClass:'dice',numAssets:4,numRounds:4,privatePerPlayer:1,contractId:'sum',roundDuration:0,positionLimit:10});
+  await wait(host,'gameStarted');
+  let st=await wait(host,'state');
+  const startRound=st.game.round;
+  console.log('RESULT after start: round='+startRound+' settled='+st.game.settled);
+  host.disconnect();
+  const h2=mk();
+  await wait(h2,'connect');
+  h2.emit('joinRoom','main'); const cfg=await wait(h2,'config');
+  h2.emit('join','Alice'); const j2=await wait(h2,'joined');
+  h2.emit('resync');
+  const priv=await wait(h2,'privateAssets');
+  st=await wait(h2,'state');
+  console.log('RESULT after reconnect: isHost='+j2.isHost+' round='+st.game.round+' settled='+st.game.settled+' privateCards='+priv.length+' cfgInProgress='+cfg.gameInProgress);
+  console.log('RESULT '+((st.game.round===startRound && !st.game.settled && j2.isHost) ? 'RESUME OK: game preserved, host restored' : 'FAIL'));
+  h2.disconnect(); process.exit(0);
+})();

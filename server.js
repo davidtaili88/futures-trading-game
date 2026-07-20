@@ -647,6 +647,24 @@ io.on('connection', (socket) => {
     advanceRound(roomId);
   });
 
+  // Non-destructive recovery: re-push full game state (and this socket's own
+  // hints/private cards) without resetting anything. Used to unfreeze a stuck
+  // client or repaint after a reload — does NOT start a new game.
+  socket.on('resync', () => {
+    if (!roomId) return;
+    const room = rooms[roomId];
+    if (!room) return;
+    const p = room.players[socket.id];
+    if (p) {
+      const hintCard = p.hintKey
+        ? room.game.hintCards.find((c) => c.key === p.hintKey) ?? null
+        : null;
+      socket.emit('hints', hintCard ? [stripHintForClient(hintCard)] : []);
+      socket.emit('privateAssets', p.privateAssets ?? []);
+    }
+    broadcast(roomId);
+  });
+
   socket.on('restart', () => {
     if (!roomId) return;
     const room = getRoom(roomId);
