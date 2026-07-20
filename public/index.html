@@ -34,6 +34,12 @@
       <input id="num-rounds" type="range" min="1" max="20" value="5" />
       <p class="hint-text" id="rounds-note"></p>
 
+      <label class="field-label" for="private-per-player">
+        Private cards per player: <b id="private-per-player-val">0</b>
+      </label>
+      <input id="private-per-player" type="range" min="0" max="3" value="0" />
+      <p class="hint-text" id="private-note">Each player is privately dealt this many extra assets that count toward settlement but are never revealed. 0 = off (everyone sees the same info).</p>
+
       <label class="field-label" id="round-duration-label" for="round-duration">
         Round duration: <b id="round-duration-val">60s</b>
       </label>
@@ -142,6 +148,7 @@
       <div id="settlement-box" class="settlement-box hidden">
         <div class="settlement-label">FINAL SETTLEMENT</div>
         <div id="settlement-value" class="settlement-value">—</div>
+        <div id="private-reveal" class="private-reveal hidden"></div>
       </div>
     </section>
 
@@ -182,7 +189,7 @@
         <span>Cash: <b id="your-cash">—</b></span>
         <span>Position: <b id="your-pos">—</b></span>
         <span>PnL: <b id="your-pnl">—</b></span>
-        <span class="muted">Limit: <b id="pos-limit-display">±10</b></span>
+        <span class="muted">Round: <b id="pos-limit-display">—</b></span>
       </div>
     </section>
 

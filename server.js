@@ -3,7 +3,7 @@ import http from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { newGame, revealedForRound, normalizeSettings, defaultSettings, assetClassInfo, contractInfo } from './game.js';
+import { newGame, revealedForRound, normalizeSettings, defaultSettings, assetClassInfo, contractInfo, drawPrivateAssets, computeSettlement, stripHintForClient, rollHintByTier } from './game.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -40,6 +40,7 @@ function getRoom(roomId) {
       game: newGame(settings),
       trades: [],
       tradeCount: {},
+      roundTradeCount: {},
       players: {},
       playersByName: {},
       hostId: null,
@@ -66,10 +67,10 @@ function isHost(room, socketId) {
   return room.hostId === socketId;
 }
 
-function withinLimit(room, player, deltaPosition) {
-  const limit = room.settings.positionLimit ?? 10;
-  const newPos = player.position + deltaPosition;
-  return newPos >= -limit && newPos <= limit;
+const ROUND_TRADE_LIMIT = 3;
+
+function withinRoundTradeLimit(room, playerName) {
+  return (room.roundTradeCount[playerName] ?? 0) < ROUND_TRADE_LIMIT;
 }
 
 function clearRoundTimer(room) {
@@ -99,6 +100,7 @@ function advanceRound(roomId) {
   room.game.round += 1;
   room.mm = null;
   room.orderBook = { bids: [], asks: [] };
+  room.roundTradeCount = {};
   if (isClosed(room)) {
     settleAll(room);
     broadcast(roomId);
@@ -147,6 +149,13 @@ function publicGameState(room) {
     settlement: closed ? room.game.settlement : null,
     marketMaking: room.settings.marketMaking || false,
     positionLimit: room.settings.positionLimit ?? 10,
+    privatePerPlayer: room.settings.privatePerPlayer || 0,
+    // On close, reveal every player's private (hole) cards so settlement is auditable.
+    privateReveal: closed && (room.settings.privatePerPlayer || 0) > 0
+      ? Object.values(room.players)
+          .filter((p) => (p.privateAssets?.length ?? 0) > 0)
+          .map((p) => ({ name: p.name, assets: p.privateAssets }))
+      : null,
   };
 }
 
@@ -183,6 +192,8 @@ function broadcast(roomId) {
     mm: mmPublic(room),
     orderBook: room.orderBook,
     roundEndsAt: room.roundEndsAt,
+    roundTradeCount: room.roundTradeCount,
+    roundTradeLimit: ROUND_TRADE_LIMIT,
   });
 }
 
@@ -196,29 +207,36 @@ function startGame(roomId, rawSettings) {
   room.settings.positionLimit = Number.isFinite(pl) && pl > 0 ? Math.min(pl, 1000) : 10;
   room.game = newGame(room.settings);
   room.trades = [];
-  room.tradeCount = {}; // playerName -> number of completed trades
+  room.tradeCount = {};
+  room.roundTradeCount = {};
   room.mm = null;
   room.orderBook = { bids: [], asks: [] };
   room.playersByName = {};
   clearRoundTimer(room);
+  const privateN = room.settings.privatePerPlayer || 0;
   for (const p of Object.values(room.players)) {
     p.cash = START_CASH;
     p.position = 0;
-    room.playersByName[p.name] = { cash: p.cash, position: p.position, hintKey: null };
+    // Deal private (hole) cards that count toward settlement but stay hidden.
+    p.privateAssets = privateN > 0 ? drawPrivateAssets(room.game, privateN) : [];
+    room.playersByName[p.name] = { cash: p.cash, position: p.position, hintKey: null, privateAssets: p.privateAssets };
   }
-  // Assign hints without replacement: shuffle the hint cards and deal them out,
-  // cycling back to the start if there are more players than hint types.
+  // Fold every player's private assets into the settlement value.
+  if (privateN > 0) {
+    const privateValues = Object.values(room.players).flatMap((p) => p.privateAssets.map((a) => a.value));
+    room.game.settlement = computeSettlement(room.game, privateValues);
+  }
+  // Assign hints by INDEPENDENT per-player tier roll (see rollHintByTier):
+  // each player rolls good/medium/bad by HINT_TIER_WEIGHTS, then gets a random
+  // hint from that tier. Rolls are independent, so duplicates are allowed and
+  // e.g. both players may hold a good (or a bad) hint.
   const cards = room.game.hintCards;
-  const shuffled = cards.slice();
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
   const playerIds = Object.keys(room.players);
-  playerIds.forEach((sid, i) => {
-    const card = shuffled[i % shuffled.length];
-    if (room.players[sid]) room.players[sid].hintKey = card.key;
-    io.to(sid).emit('hints', card ? [card] : []);
+  playerIds.forEach((sid) => {
+    const card = rollHintByTier(cards);
+    if (room.players[sid]) room.players[sid].hintKey = card?.key ?? null;
+    io.to(sid).emit('hints', card ? [stripHintForClient(card)] : []);
+    io.to(sid).emit('privateAssets', room.players[sid]?.privateAssets ?? []);
   });
   room.game.round = 1;
   io.to(roomId).emit('gameStarted');
@@ -233,30 +251,21 @@ function startGame(roomId, rawSettings) {
 
 function syncPlayerByName(room, socketId) {
   const p = room.players[socketId];
-  if (p) room.playersByName[p.name] = { cash: p.cash, position: p.position, hintKey: p.hintKey };
+  if (p) room.playersByName[p.name] = { cash: p.cash, position: p.position, hintKey: p.hintKey, privateAssets: p.privateAssets };
 }
 
 function pickHintFor(room, socketId) {
-  const cards = room.game.hintCards;
-  if (!cards.length) return null;
-  // Count how many connected players already hold each hint key.
-  const counts = Object.fromEntries(cards.map(c => [c.key, 0]));
-  for (const [sid, p] of Object.entries(room.players)) {
-    if (sid !== socketId && p.hintKey && counts[p.hintKey] !== undefined) {
-      counts[p.hintKey]++;
-    }
-  }
-  // Pick the hint key with the fewest holders (ties broken randomly).
-  const minCount = Math.min(...Object.values(counts));
-  const candidates = cards.filter(c => counts[c.key] === minCount);
-  const card = candidates[Math.floor(Math.random() * candidates.length)];
-  if (room.players[socketId]) room.players[socketId].hintKey = card.key;
+  // Mid-game join: roll a hint by tier, independently of what others hold
+  // (duplicates allowed), matching the start-of-game deal.
+  const card = rollHintByTier(room.game.hintCards);
+  if (room.players[socketId]) room.players[socketId].hintKey = card?.key ?? null;
   return card;
 }
 
 function recordTrade(room, ...playerNames) {
   for (const name of playerNames) {
     room.tradeCount[name] = (room.tradeCount[name] ?? 0) + 1;
+    room.roundTradeCount[name] = (room.roundTradeCount[name] ?? 0) + 1;
   }
 }
 
@@ -400,11 +409,13 @@ io.on('connection', (socket) => {
         position: saved.position,
         connected: true,
         hintKey: saved.hintKey,
+        privateAssets: saved.privateAssets ?? [],
       };
       const hintCard = saved.hintKey
         ? room.game.hintCards.find((c) => c.key === saved.hintKey) ?? null
         : null;
-      socket.emit('hints', hintCard ? [hintCard] : []);
+      socket.emit('hints', hintCard ? [stripHintForClient(hintCard)] : []);
+      socket.emit('privateAssets', saved.privateAssets ?? []);
     } else {
       // New player — fresh state.
       room.players[socket.id] = {
@@ -414,10 +425,11 @@ io.on('connection', (socket) => {
         position: 0,
         connected: true,
         hintKey: null,
+        privateAssets: [],
       };
-      room.playersByName[clean] = { cash: START_CASH, position: 0, hintKey: null };
+      room.playersByName[clean] = { cash: START_CASH, position: 0, hintKey: null, privateAssets: [] };
       const hint = pickHintFor(room, socket.id);
-      socket.emit('hints', hint ? [hint] : []);
+      socket.emit('hints', hint ? [stripHintForClient(hint)] : []);
     }
 
     // First player to join becomes host.
@@ -460,21 +472,16 @@ io.on('connection', (socket) => {
     const maker = room.players[room.mm.makerId];
     if (!maker) return;
     const cost = qty * price;
-    const limit = room.settings.positionLimit ?? 10;
+    if (!withinRoundTradeLimit(room, p.name)) {
+      socket.emit('tradeError', `Round trade limit (${ROUND_TRADE_LIMIT}) reached — wait for next round.`);
+      return;
+    }
     if (side === 'buy') {
-      if (!withinLimit(room, p, +qty)) {
-        socket.emit('tradeError', `Position limit ±${limit} reached — cannot buy.`);
-        return;
-      }
       p.cash -= cost;
       p.position += qty;
       maker.cash += cost;
       maker.position -= qty;
     } else {
-      if (!withinLimit(room, p, -qty)) {
-        socket.emit('tradeError', `Position limit ±${limit} reached — cannot sell.`);
-        return;
-      }
       p.cash += cost;
       p.position -= qty;
       maker.cash -= cost;
@@ -510,17 +517,8 @@ io.on('connection', (socket) => {
     if (!isFinite(price)) return;
     if (side !== 'bid' && side !== 'ask') return;
 
-    // Clamp qty so even if all resting orders on this side fill, position stays within limits.
-    const limit = room.settings.positionLimit ?? 10;
-    const existingExposure = (side === 'bid' ? room.orderBook.bids : room.orderBook.asks)
-      .filter(o => o.socketId === socket.id)
-      .reduce((sum, o) => sum + o.qty, 0);
-    const maxDelta = side === 'bid'
-      ? limit - p.position - existingExposure
-      : limit + p.position - existingExposure;
-    qty = Math.min(qty, Math.max(0, maxDelta));
-    if (qty <= 0) {
-      socket.emit('tradeError', `Position limit ±${limit} reached — order rejected.`);
+    if (!withinRoundTradeLimit(room, p.name)) {
+      socket.emit('tradeError', `Round trade limit (${ROUND_TRADE_LIMIT}) reached — wait for next round.`);
       return;
     }
 
@@ -550,23 +548,16 @@ io.on('connection', (socket) => {
     const { price, qty } = order;
     const cost = qty * price;
 
-    const limit = room.settings.positionLimit ?? 10;
+    if (!withinRoundTradeLimit(room, taker.name)) {
+      socket.emit('tradeError', `Round trade limit (${ROUND_TRADE_LIMIT}) reached — wait for next round.`);
+      return;
+    }
     if (side === 'bid') {
-      if (!withinLimit(room, taker, -qty)) {
-        socket.emit('tradeError', `Position limit ±${limit} reached — cannot hit this bid.`);
-        return;
-      }
-      if (!withinLimit(room, maker, +qty)) return;
       taker.cash += cost;
       taker.position -= qty;
       maker.cash -= cost;
       maker.position += qty;
     } else {
-      if (!withinLimit(room, taker, +qty)) {
-        socket.emit('tradeError', `Position limit ±${limit} reached — cannot lift this ask.`);
-        return;
-      }
-      if (!withinLimit(room, maker, -qty)) return;
       taker.cash -= cost;
       taker.position += qty;
       maker.cash += cost;
@@ -660,6 +651,14 @@ io.on('connection', (socket) => {
     if (!roomId) return;
     const room = getRoom(roomId);
     if (!isHost(room, socket.id)) return;
+    clearRoundTimer(room);
+    room.mm = null;
+    room.orderBook = { bids: [], asks: [] };
+    room.trades = [];
+    room.tradeCount = {};
+    room.roundTradeCount = {};
+    room.game.round = 0;
+    broadcast(roomId);
     io.to(roomId).emit('openSettings');
   });
 

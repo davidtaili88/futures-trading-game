@@ -184,6 +184,15 @@ main {
 }
 .hint-card .hl { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
 .hint-card .hv { font-size: 18px; font-weight: 700; color: var(--gold); }
+/* Private (hole) cards: distinct from public stat hints. */
+.hint-card.private-card { border-color: var(--green); background: linear-gradient(135deg, #1d2b1d, #14211a); }
+.hint-card.private-card .hv { color: var(--green); }
+
+.private-reveal { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.1); text-align: left; }
+.private-reveal .pr-label { font-size: 11px; color: var(--muted); letter-spacing: 0.5px; margin-bottom: 6px; }
+.private-reveal .pr-row { display: flex; justify-content: space-between; font-size: 13px; padding: 2px 0; }
+.private-reveal .pr-name { color: var(--muted); }
+.private-reveal .pr-cards { font-weight: 700; color: var(--gold); }
 
 /* ---------- Trade ticket ---------- */
 .ticket { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }

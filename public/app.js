@@ -51,6 +51,7 @@ socket.on('config', ({ assetClasses: classes, contracts: ctrs, current, gameInPr
   renderContractButtons();
   $('num-assets').value = current.numAssets;
   $('num-rounds').value = current.numRounds;
+  $('private-per-player').value = current.privatePerPlayer ?? 0;
   syncSettingsLabels();
   syncRoundDurationLabel();
   syncPositionLimitLabel();
@@ -103,6 +104,7 @@ function syncSettingsLabels() {
   $('num-assets-val').textContent = numAssets;
   $('num-assets-unit').textContent = cls ? `(${cls.unit}${numAssets === 1 ? '' : 's'})` : '';
   $('num-rounds-val').textContent = numRounds;
+  $('private-per-player-val').textContent = parseInt($('private-per-player').value, 10);
   let note = '';
   if (numRounds < numAssets) note = `Only ${numRounds} of ${numAssets} assets will be revealed before settlement.`;
   else if (numRounds > numAssets) note = `${numAssets} reveals, then ${numRounds - numAssets} extra trading round(s).`;
@@ -125,6 +127,7 @@ function syncPositionLimitLabel() {
 
 $('num-assets').addEventListener('input', syncSettingsLabels);
 $('num-rounds').addEventListener('input', syncSettingsLabels);
+$('private-per-player').addEventListener('input', syncSettingsLabels);
 $('round-duration').addEventListener('input', syncRoundDurationLabel);
 $('position-limit').addEventListener('input', syncPositionLimitLabel);
 $('start-btn').addEventListener('click', startGame);
@@ -154,6 +157,7 @@ function applySettings() {
     contractId: chosenContractId,
     numAssets: parseInt($('num-assets').value, 10),
     numRounds: parseInt($('num-rounds').value, 10),
+    privatePerPlayer: parseInt($('private-per-player').value, 10),
     marketMaking: $('mm-mode').checked,
     roundDuration: parseInt($('round-duration').value, 10),
     positionLimit: parseInt($('position-limit').value, 10),
@@ -177,15 +181,25 @@ socket.on('joined', ({ id, startCash: sc, isHost: ih }) => {
 
 // ---------- Hints ----------
 let hintCards = [];
+let myPrivateAssets = [];
 socket.on('hints', (cards) => {
   hintCards = cards;
+  renderHints();
+});
+socket.on('privateAssets', (assets) => {
+  myPrivateAssets = Array.isArray(assets) ? assets : [];
   renderHints();
 });
 
 function renderHints() {
   const wrap = $('hints');
   wrap.innerHTML = '';
-  if (!hintCards.length) return;
+  for (const a of myPrivateAssets) {
+    const div = document.createElement('div');
+    div.className = 'hint-card revealed private-card';
+    div.innerHTML = `<div class="hl">Your private ${escapeHtml(a.kind ?? 'card')}</div><div class="hv">${escapeHtml(a.label ?? a.value)}</div>`;
+    wrap.appendChild(div);
+  }
   for (const c of hintCards) {
     const div = document.createElement('div');
     div.className = 'hint-card revealed';
@@ -362,11 +376,16 @@ socket.on('tradeError', (text) => {
 });
 
 // ---------- State render ----------
-socket.on('state', ({ game, players, trades, lastPrice, mm, orderBook, roundEndsAt }) => {
+socket.on('state', ({ game, players, trades, lastPrice, mm, orderBook, roundEndsAt, roundTradeCount, roundTradeLimit }) => {
   currentMM = mm;
   isMMMode = game.marketMaking;
   startCountdown(roundEndsAt);
-  $('pos-limit-display').textContent = `±${game.positionLimit ?? 10}`;
+  const me = players.find(p => p.id === myId);
+  const amMaker = mm?.phase === 'trading' && myId === mm.makerId;
+  const myRoundTrades = (me && !amMaker) ? (roundTradeCount?.[me.name] ?? 0) : null;
+  $('pos-limit-display').textContent = myRoundTrades !== null
+    ? `${roundTradeLimit - myRoundTrades}/${roundTradeLimit} trades left`
+    : '—';
 
   // If market is already open and we're a taker, dismiss any blocking overlays
   // (handles late joiners who missed the bid/quote events).
@@ -482,11 +501,22 @@ function renderContract(game) {
   }
 
   const box = $('settlement-box');
+  const revealBox = $('private-reveal');
   if (game.settled) {
     box.classList.remove('hidden');
     $('settlement-value').textContent = game.settlement;
+    if (game.privateReveal && game.privateReveal.length) {
+      revealBox.classList.remove('hidden');
+      const rows = game.privateReveal
+        .map((r) => `<div class="pr-row"><span class="pr-name">${escapeHtml(r.name)}</span><span class="pr-cards">${r.assets.map((a) => escapeHtml(a.label ?? a.value)).join(', ')}</span></div>`)
+        .join('');
+      revealBox.innerHTML = `<div class="pr-label">Private cards (counted toward settlement)</div>${rows}`;
+    } else {
+      revealBox.classList.add('hidden');
+    }
   } else {
     box.classList.add('hidden');
+    revealBox.classList.add('hidden');
   }
 }
 
