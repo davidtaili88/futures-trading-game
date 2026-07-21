@@ -164,19 +164,21 @@ function makeHintCards(contract, assets) {
   // ----- Good: exact value of one random COMMUNITY asset -----
   // Private cards are never passed into this function, so this can only ever
   // reveal a community asset. Safe for every contract (one of many assets).
+  // `idx` is stored so a hint can be re-evaluated on a candidate community set.
   {
     const idx = Math.floor(Math.random() * n);
-    cards.push({ key: 'exact', label: `Asset #${idx + 1} exact value`, value: vals[idx], tier: 'good' });
+    cards.push({ key: 'exact', idx, label: `Asset #${idx + 1} exact value`, value: vals[idx], tier: 'good' });
   }
 
   // ----- Medium: count of assets ≥ a RANDOM threshold -----
   // Threshold rolled once here (cached in game.hintCards), so it's stable across
   // reconnects. An extreme roll makes this hint useless — that's intentional:
-  // the holder must judge how much their own signal is worth.
+  // the holder must judge how much their own signal is worth. `threshold` stored
+  // for re-evaluation.
   {
     const t = mn + Math.floor(Math.random() * (Math.max(1, range) + 1)); // in [min, max]
     const k = vals.filter((v) => v >= t).length;
-    cards.push({ key: 'count_above', label: `Assets ≥ ${t}`, value: k, tier: 'medium' });
+    cards.push({ key: 'count_above', threshold: t, label: `Assets ≥ ${t}`, value: k, tier: 'medium' });
   }
 
   // ----- Medium: count of odd assets -----
@@ -252,12 +254,16 @@ export function normalizeSettings(s = {}) {
   let privatePerPlayer = parseInt(s.privatePerPlayer, 10);
   if (!Number.isFinite(privatePerPlayer)) privatePerPlayer = 0;
   privatePerPlayer = Math.max(0, Math.min(3, privatePerPlayer));
+  // numBots: computer players added in market-making mode. 0 disables bots.
+  let numBots = parseInt(s.numBots, 10);
+  if (!Number.isFinite(numBots)) numBots = 0;
+  numBots = Math.max(0, Math.min(8, numBots));
   const contractId = CONTRACTS.find((c) => c.id === s.contractId) ? s.contractId : null;
-  return { assetClass: classKey, numAssets, numRounds, privatePerPlayer, contractId };
+  return { assetClass: classKey, numAssets, numRounds, privatePerPlayer, numBots, contractId };
 }
 
 export function defaultSettings() {
-  return { assetClass: 'cards', numAssets: 5, numRounds: 5, privatePerPlayer: 0, contractId: null, roundDuration: 60, positionLimit: 10 };
+  return { assetClass: 'cards', numAssets: 5, numRounds: 5, privatePerPlayer: 0, numBots: 0, contractId: null, roundDuration: 60, positionLimit: 10 };
 }
 
 // Draw `count` private (hole) assets for a single player from the game's asset
@@ -275,6 +281,93 @@ export function computeSettlement(game, privateValues = []) {
   const contract = CONTRACTS.find((c) => c.id === game.contract.id);
   const vals = game.assets.map((a) => a.value).concat(privateValues);
   return contract.settle(vals);
+}
+
+// Monte Carlo fair-value estimate for a bot, over ALL contract types.
+// The bot knows: `revealedValues` (community assets revealed so far) and
+// `ownPrivateValues` (its own hole cards). It does NOT know the unrevealed
+// community assets (`hiddenCommunityCount`) or other players' private cards
+// (`otherPrivateCount`). We simulate those unknowns `sims` times, run the
+// contract's settle over the full value set, and return the mean (fair) and
+// standard deviation (uncertainty / confidence signal).
+//
+// If `hint` (the bot's own hint card) is supplied, the simulation is CONDITIONED
+// on it by rejection sampling: hints are statistics over the FULL community set
+// (revealed + hidden), so we resample the hidden community assets until the
+// candidate set reproduces the hint's value, then settle. Rejection is capped
+// (maxAttemptsPerSim) and falls back to an unconstrained draw if the hint is too
+// tight to hit — so the estimator never hangs.
+export function estimateFair(game, {
+  revealedValues = [],
+  ownPrivateValues = [],
+  hiddenCommunityCount = 0,
+  otherPrivateCount = 0,
+  hint = null,
+  sims = 500,
+} = {}) {
+  const cls = ASSET_CLASSES[game.contract.assetClass];
+  const contract = CONTRACTS.find((c) => c.id === game.contract.id);
+  const hidden = Math.max(0, hiddenCommunityCount);
+  const others = Math.max(0, otherPrivateCount);
+  const useHint = hint && hintIsEvaluable(hint);
+  const maxAttemptsPerSim = 200;
+
+  let sum = 0;
+  let sumSq = 0;
+  const n = Math.max(1, sims);
+  for (let i = 0; i < n; i++) {
+    // Draw the hidden community assets, conditioned on the hint if present.
+    let hiddenVals;
+    if (useHint) {
+      let ok = false;
+      for (let a = 0; a < maxAttemptsPerSim; a++) {
+        hiddenVals = Array.from({ length: hidden }, () => cls.sampleValue());
+        if (hintMatches(hint, revealedValues.concat(hiddenVals))) { ok = true; break; }
+      }
+      if (!ok) hiddenVals = Array.from({ length: hidden }, () => cls.sampleValue()); // fallback
+    } else {
+      hiddenVals = Array.from({ length: hidden }, () => cls.sampleValue());
+    }
+
+    const vals = revealedValues.concat(hiddenVals, ownPrivateValues);
+    for (let u = 0; u < others; u++) vals.push(cls.sampleValue()); // other players' privates
+    const s = contract.settle(vals);
+    sum += s;
+    sumSq += s * s;
+  }
+  const mean = sum / n;
+  const variance = Math.max(0, sumSq / n - mean * mean);
+  return { fair: mean, stdev: Math.sqrt(variance) };
+}
+
+// Can this hint be re-evaluated on a candidate community set? (All current hint
+// keys can; guards future/unknown keys so they're simply ignored, not crashed on.)
+function hintIsEvaluable(hint) {
+  return hint && HINT_EVALUATORS[hint.key] !== undefined;
+}
+
+// Recompute what a hint's value WOULD be for a given full community set, so the
+// simulation can accept/reject candidates. One evaluator per hint key; the value
+// is compared against the hint's actual `value`.
+const HINT_EVALUATORS = {
+  min: (v) => Math.min(...v),
+  max: (v) => Math.max(...v),
+  mean: (v) => Math.round((v.reduce((a, b) => a + b, 0) / v.length) * 100) / 100,
+  range: (v) => Math.max(...v) - Math.min(...v),
+  exact: (v, hint) => v[hint.idx],
+  count_above: (v, hint) => v.filter((x) => x >= hint.threshold).length,
+  count_odd: (v) => v.filter((x) => x % 2 === 1).length,
+  above_mean: (v) => {
+    const m = v.reduce((a, b) => a + b, 0) / v.length;
+    return v.filter((x) => x > m).length;
+  },
+  parity: (v) => (v.reduce((a, b) => a + b, 0) % 2 === 0 ? 'even' : 'odd'),
+};
+
+function hintMatches(hint, communityValues) {
+  const evalFn = HINT_EVALUATORS[hint.key];
+  if (!evalFn) return true; // unknown hint: don't constrain
+  return evalFn(communityValues, hint) === hint.value;
 }
 
 // Expose contract metadata for the settings UI.

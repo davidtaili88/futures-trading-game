@@ -3,7 +3,7 @@ import http from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { newGame, revealedForRound, normalizeSettings, defaultSettings, assetClassInfo, contractInfo, drawPrivateAssets, computeSettlement, stripHintForClient, rollHintByTier } from './game.js';
+import { newGame, revealedForRound, normalizeSettings, defaultSettings, assetClassInfo, contractInfo, drawPrivateAssets, computeSettlement, stripHintForClient, rollHintByTier, estimateFair } from './game.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -55,13 +55,15 @@ function getRoom(roomId) {
 }
 
 function assignHost(room, preferredId) {
-  if (preferredId && room.players[preferredId]?.connected) {
+  if (preferredId && room.players[preferredId]?.connected && !isBot(room.players[preferredId])) {
     room.hostId = preferredId;
     return;
   }
-  // Fall back to first connected player.
-  const connected = connectedPlayerIds(room);
-  room.hostId = connected.length ? connected[0] : null;
+  // Fall back to first connected HUMAN player — bots can never be host (they
+  // would never advance rounds or resolve bids).
+  const human = Object.entries(room.players)
+    .find(([, p]) => p.connected && !isBot(p));
+  room.hostId = human ? human[0] : null;
 }
 
 function isHost(room, socketId) {
@@ -86,6 +88,98 @@ function roundNet(room, playerName) {
 // change within ±ROUND_NET_LIMIT?
 function withinRoundNetLimit(room, playerName, signedDelta) {
   return Math.abs(roundNet(room, playerName) + signedDelta) <= ROUND_NET_LIMIT;
+}
+
+// ---------- Bots (market-making mode only) ----------
+// A bot is a player entry with a synthetic id (`bot:N`), no socket, always
+// connected. It estimates fair value by Monte Carlo (see estimateFair) using
+// what it can see: revealed community assets + its own hole cards. It quotes
+// wider when its estimate is uncertain (high stdev), and only takes when a
+// maker's quote is off its fair by more than its own uncertainty.
+const BOT_MISTAKE_RATE = 0.15;   // chance per bidding turn to bid off-model
+const BOT_MARGIN_K = 0.6;        // bid margin ≈ K * stdev (confidence-scaled)
+const BOT_TAKE_EDGE_K = 0.5;     // take only if |fair - quote| > K * stdev
+const BOT_MIN_MARGIN = 1;        // floor so margins stay ≥ 1 and integer
+const BOT_ACT_MIN_MS = 500;      // action jitter lower bound
+const BOT_ACT_MAX_MS = 3000;     // action jitter upper bound
+
+function isBot(player) {
+  return !!(player && player.isBot);
+}
+
+function botDelay() {
+  return BOT_ACT_MIN_MS + Math.random() * (BOT_ACT_MAX_MS - BOT_ACT_MIN_MS);
+}
+
+// The values a given player (bot) can see for its own fair estimate.
+function botKnownState(room, botPlayer) {
+  const revealedCount = revealedForRound(room.game);
+  const revealedValues = room.game.assets.slice(0, revealedCount).map((a) => a.value);
+  const ownPrivateValues = (botPlayer.privateAssets ?? []).map((a) => a.value);
+  const hiddenCommunityCount = room.game.assets.length - revealedCount;
+  // Other players' private cards the bot cannot see.
+  const privateN = room.settings.privatePerPlayer || 0;
+  const otherPlayers = Object.values(room.players).length - 1;
+  const otherPrivateCount = Math.max(0, otherPlayers) * privateN;
+  // The bot's own hint card (dealt in startGame like a human's) — the estimator
+  // conditions its simulation on it by rejection sampling.
+  const hint = botPlayer.hintKey
+    ? room.game.hintCards.find((c) => c.key === botPlayer.hintKey) ?? null
+    : null;
+  return { revealedValues, ownPrivateValues, hiddenCommunityCount, otherPrivateCount, hint };
+}
+
+// Bot's fair-value estimate + uncertainty for the current round.
+function botEstimate(room, botPlayer) {
+  return estimateFair(room.game, { ...botKnownState(room, botPlayer), sims: 500 });
+}
+
+// Bid margin for a bot given its estimate. Normally confidence-scaled
+// (wider when uncertain). With probability BOT_MISTAKE_RATE it bids "off-model":
+// a random margin ignoring its true confidence — sometimes too tight (wins the
+// maker role with a bad market to pick off), sometimes too wide.
+function botBidMargin(est) {
+  const jitter = 0.85 + Math.random() * 0.3; // ±15% so bots rarely tie exactly
+  let margin;
+  if (Math.random() < BOT_MISTAKE_RATE) {
+    // Off-model: random margin in a plausible band, unrelated to real stdev.
+    margin = BOT_MIN_MARGIN + Math.random() * 8;
+  } else {
+    margin = BOT_MARGIN_K * est.stdev * jitter;
+  }
+  return Math.max(BOT_MIN_MARGIN, Math.round(margin));
+}
+
+// Bot's bid/ask when it wins the maker role: centered on its fair estimate,
+// with spread exactly equal to the winning margin (server requires spread==margin).
+function botQuote(est, margin) {
+  const half = margin / 2;
+  const bid = Math.round(est.fair - half);
+  return { bid, ask: bid + margin };
+}
+
+// Bot taker decision vs a maker's quote. Returns { side, qty } or null.
+// Buys if the ask is well below fair; sells if the bid is well above fair;
+// the "well" threshold scales with the bot's own uncertainty so it won't get
+// picked off on high-variance contracts.
+function botTakeDecision(room, botPlayer, est) {
+  if (!room.mm || room.mm.phase !== 'trading') return null;
+  const edge = BOT_TAKE_EDGE_K * est.stdev;
+  const { bid, ask } = room.mm;
+  let side = null;
+  if (est.fair - ask > edge) side = 'buy';
+  else if (bid - est.fair > edge) side = 'sell';
+  if (!side) return null;
+
+  // Size: small lot (≤4), clamped so |net ± qty| stays within ROUND_NET_LIMIT.
+  if (!withinRoundTradeLimit(room, botPlayer.name)) return null;
+  const net = roundNet(room, botPlayer.name);
+  const dir = side === 'buy' ? 1 : -1;
+  // Largest q with |net + dir*q| ≤ LIMIT: buy caps at LIMIT - net, sell at LIMIT + net.
+  const headroom = dir > 0 ? ROUND_NET_LIMIT - net : ROUND_NET_LIMIT + net;
+  const qty = Math.max(0, Math.min(4, headroom));
+  if (qty <= 0) return null;
+  return { side, qty };
 }
 
 function clearRoundTimer(room) {
@@ -188,6 +282,7 @@ function playerList(room) {
     pnl: pnlFor(p, room),
     isMarketMaker: room.mm ? p.id === room.mm.makerId : false,
     isHost: p.id === room.hostId,
+    isBot: !!p.isBot,
   }));
 }
 
@@ -235,6 +330,26 @@ function startGame(roomId, rawSettings) {
   room.orderBook = { bids: [], asks: [] };
   room.playersByName = {};
   clearRoundTimer(room);
+
+  // Remove bots from any prior game, then spawn fresh bots (MM mode only).
+  for (const [id, p] of Object.entries(room.players)) {
+    if (isBot(p)) delete room.players[id];
+  }
+  const numBots = room.settings.marketMaking ? (room.settings.numBots || 0) : 0;
+  for (let i = 1; i <= numBots; i++) {
+    const id = `bot:${i}`;
+    room.players[id] = {
+      id,
+      name: `Bot-${i}`,
+      cash: START_CASH,
+      position: 0,
+      connected: true,
+      isBot: true,
+      hintKey: null,
+      privateAssets: [],
+    };
+  }
+
   const privateN = room.settings.privatePerPlayer || 0;
   for (const p of Object.values(room.players)) {
     p.cash = START_CASH;
@@ -410,6 +525,7 @@ function openBidPhase(roomId) {
   room.mm = { phase: 'bidding', bids: {}, makerId: null, bid: null, ask: null };
   broadcast(roomId);
   io.to(roomId).emit('bidPhaseOpen');
+  scheduleBotBids(roomId);
 }
 
 // Called when all connected players have submitted bids (or host forces close).
@@ -447,6 +563,82 @@ function resolveBids(roomId) {
     margin: winMargin,
   });
   io.to(winnerId).emit('setMarketPrompt', { margin: winMargin });
+
+  // If a bot won the maker role, have it set its market after a short delay.
+  if (isBot(room.players[winnerId])) scheduleBotMakerQuote(roomId, winnerId);
+}
+
+// ---------- Bot phase drivers ----------
+// Each bot submits a bid during the bidding phase, on a jittered delay.
+function scheduleBotBids(roomId) {
+  const room = rooms[roomId];
+  if (!room) return;
+  const roundAtSchedule = room.game.round;
+  for (const [id, p] of Object.entries(room.players)) {
+    if (!isBot(p)) continue;
+    setTimeout(() => {
+      const r = rooms[roomId];
+      if (!r || !r.mm || r.mm.phase !== 'bidding') return;
+      if (r.game.round !== roundAtSchedule) return;      // stale round
+      if (r.mm.bids[id] !== undefined) return;           // already bid
+      if (!r.players[id]) return;                        // bot removed
+      const est = botEstimate(r, r.players[id]);
+      r.mm.bids[id] = botBidMargin(est);
+      broadcast(roomId);
+      const connected = connectedPlayerIds(r);
+      if (connected.every((cid) => r.mm.bids[cid] !== undefined)) resolveBids(roomId);
+    }, botDelay());
+  }
+}
+
+// A bot that won the maker role sets its bid/ask (centered on its fair estimate,
+// spread == winning margin) after a short delay.
+function scheduleBotMakerQuote(roomId, botId) {
+  const roundAtSchedule = rooms[roomId]?.game.round;
+  setTimeout(() => {
+    const room = rooms[roomId];
+    if (!room || !room.mm || room.mm.phase !== 'quoting') return;
+    if (room.game.round !== roundAtSchedule) return;
+    if (room.mm.makerId !== botId || !room.players[botId]) return;
+    const est = botEstimate(room, room.players[botId]);
+    const { bid, ask } = botQuote(est, room.mm.margin);
+    room.mm.bid = bid;
+    room.mm.ask = ask;
+    room.mm.phase = 'trading';
+    broadcast(roomId);
+    io.to(roomId).emit('marketSet', { makerName: room.players[botId]?.name ?? '—', bid, ask });
+    scheduleBotTakes(roomId);
+  }, botDelay());
+}
+
+// When trading opens, each non-maker bot evaluates whether to take against the
+// maker's quote, on a jittered delay. Bots may take a couple of times if edge
+// persists (bounded by the 3-trade and ±10 net caps inside botTakeDecision).
+function scheduleBotTakes(roomId) {
+  const room = rooms[roomId];
+  if (!room || !room.mm || room.mm.phase !== 'trading') return;
+  const roundAtSchedule = room.game.round;
+  for (const [id, p] of Object.entries(room.players)) {
+    if (!isBot(p)) continue;
+    if (id === room.mm.makerId) continue;
+    const attempt = (n) => {
+      if (n <= 0) return;
+      setTimeout(() => {
+        const r = rooms[roomId];
+        if (!r || !r.mm || r.mm.phase !== 'trading') return;
+        if (r.game.round !== roundAtSchedule) return;
+        if (!r.players[id] || id === r.mm.makerId) return;
+        const est = botEstimate(r, r.players[id]);
+        const decision = botTakeDecision(r, r.players[id], est);
+        if (decision) {
+          executeMakerTrade(r, id, decision.side, decision.qty);
+          broadcast(roomId);
+        }
+        attempt(n - 1);
+      }, botDelay());
+    };
+    attempt(2); // up to 2 evaluations per round
+  }
 }
 
 io.on('connection', (socket) => {
@@ -683,6 +875,7 @@ io.on('connection', (socket) => {
     room.mm.phase = 'trading';
     broadcast(roomId);
     io.to(roomId).emit('marketSet', { makerName: room.players[socket.id]?.name ?? '—', bid, ask });
+    scheduleBotTakes(roomId);
   });
 
   // Host can force-resolve bids early (not all players submitted).

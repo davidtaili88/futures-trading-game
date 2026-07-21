@@ -57,12 +57,14 @@ socket.on('config', ({ assetClasses: classes, contracts: ctrs, current, gameInPr
   $('mm-mode').checked = !!current.marketMaking;
   $('round-duration').value = current.roundDuration ?? 60;
   $('position-limit').value = current.positionLimit ?? 10;
+  $('num-bots').value = current.numBots ?? 0;
   renderAssetClassButtons();
   renderContractButtons();
   $('num-assets').value = current.numAssets;
   $('num-rounds').value = current.numRounds;
   $('private-per-player').value = current.privatePerPlayer ?? 0;
   syncSettingsLabels();
+  syncBotsVisibility();
   syncRoundDurationLabel();
   syncPositionLimitLabel();
   $('start-btn').textContent = gameInProgress ? 'Join Game' : 'Start Game';
@@ -135,11 +137,20 @@ function syncPositionLimitLabel() {
   $('position-limit-val').textContent = `±${v}`;
 }
 
+// Bots are market-making-mode only — show the slider only when MM is on.
+function syncBotsVisibility() {
+  const on = $('mm-mode').checked;
+  $('num-bots-row').classList.toggle('hidden', !on);
+  $('num-bots-val').textContent = parseInt($('num-bots').value, 10);
+}
+
 $('num-assets').addEventListener('input', syncSettingsLabels);
 $('num-rounds').addEventListener('input', syncSettingsLabels);
 $('private-per-player').addEventListener('input', syncSettingsLabels);
 $('round-duration').addEventListener('input', syncRoundDurationLabel);
 $('position-limit').addEventListener('input', syncPositionLimitLabel);
+$('num-bots').addEventListener('input', syncBotsVisibility);
+$('mm-mode').addEventListener('change', syncBotsVisibility);
 $('start-btn').addEventListener('click', startGame);
 $('name-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') startGame(); });
 
@@ -176,6 +187,7 @@ function applySettings() {
     numRounds: parseInt($('num-rounds').value, 10),
     privatePerPlayer: parseInt($('private-per-player').value, 10),
     marketMaking: $('mm-mode').checked,
+    numBots: $('mm-mode').checked ? parseInt($('num-bots').value, 10) : 0,
     roundDuration: parseInt($('round-duration').value, 10),
     positionLimit: parseInt($('position-limit').value, 10),
   });
@@ -225,6 +237,14 @@ function renderHints() {
     div.className = 'hint-card revealed';
     div.innerHTML = `<div class="hl">${c.label}</div><div class="hv">${c.value}</div>`;
     wrap.appendChild(div);
+  }
+  // Hints describe only the shared community cards. Clarify this when the player
+  // also holds a private card, since "assets"/"mean" then excludes that card.
+  if (hintCards.length && myPrivateAssets.length) {
+    const note = document.createElement('div');
+    note.className = 'hint-scope-note';
+    note.textContent = 'Hints describe the shared community cards only — your private card is extra and not counted in them.';
+    wrap.appendChild(note);
   }
 }
 
@@ -562,8 +582,9 @@ function renderPlayers(players) {
     const pnlCls = p.pnl > 0 ? 'pos-pos' : p.pnl < 0 ? 'pos-neg' : '';
     const mmTag = p.isMarketMaker ? ' <span class="mm-tag">MM</span>' : '';
     const hostTag = p.isHost ? ' <span class="host-tag">HOST</span>' : '';
+    const botTag = p.isBot ? ' <span class="bot-tag">BOT</span>' : '';
     tr.innerHTML = `
-      <td>${escapeHtml(p.name)}${mmTag}${hostTag}${p.connected ? '' : ' 💤'}</td>
+      <td>${escapeHtml(p.name)}${botTag}${mmTag}${hostTag}${p.connected ? '' : ' 💤'}</td>
       <td>${p.cash}</td>
       <td class="${posCls}">${p.position}</td>
       <td class="${pnlCls}">${p.pnl >= 0 ? '+' : ''}${p.pnl}</td>

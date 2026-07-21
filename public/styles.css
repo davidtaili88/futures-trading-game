@@ -187,6 +187,8 @@ main {
 /* Private (hole) cards: distinct from public stat hints. */
 .hint-card.private-card { border-color: var(--green); background: linear-gradient(135deg, #1d2b1d, #14211a); }
 .hint-card.private-card .hv { color: var(--green); }
+/* Full-width clarifying note under the hint cards. */
+.hint-scope-note { flex-basis: 100%; font-size: 11px; color: var(--muted); margin-top: 2px; }
 
 .private-reveal { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.1); text-align: left; }
 .private-reveal .pr-label { font-size: 11px; color: var(--muted); letter-spacing: 0.5px; margin-bottom: 6px; }
@@ -336,6 +338,11 @@ main {
 .host-tag {
   display: inline-block; font-size: 10px; font-weight: 700;
   background: var(--accent); color: #fff;
+  border-radius: 3px; padding: 1px 4px; margin-left: 4px; vertical-align: middle;
+}
+.bot-tag {
+  display: inline-block; font-size: 10px; font-weight: 700;
+  background: #6b7280; color: #fff;
   border-radius: 3px; padding: 1px 4px; margin-left: 4px; vertical-align: middle;
 }
 

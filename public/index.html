@@ -38,7 +38,7 @@
         Private cards per player: <b id="private-per-player-val">0</b>
       </label>
       <input id="private-per-player" type="range" min="0" max="3" value="0" />
-      <p class="hint-text" id="private-note">Each player is privately dealt this many extra assets that count toward settlement but are never revealed. 0 = off (everyone sees the same info).</p>
+      <p class="hint-text" id="private-note">Each player is privately dealt this many extra assets, never revealed to others. They <b>count toward the main contract settlement</b> just like the community cards. Note: hints describe the shared community cards only — your private card is extra and is <b>not</b> counted in them. 0 = off (everyone sees the same info).</p>
 
       <label class="field-label" id="round-duration-label" for="round-duration">
         Round duration: <b id="round-duration-val">60s</b>
@@ -58,6 +58,14 @@
           <span class="toggle-title">Market Making Mode</span>
           <span class="toggle-desc">Before each round, players bid a spread margin. The tightest quote wins the right to make the market — all others trade at their bid/ask.</span>
         </label>
+      </div>
+
+      <div id="num-bots-row" class="hidden">
+        <label class="field-label" for="num-bots">
+          Bots: <b id="num-bots-val">0</b>
+        </label>
+        <input id="num-bots" type="range" min="0" max="8" value="0" />
+        <p class="hint-text">Computer traders that bid, make markets, and take — market-making mode only. Each bot estimates fair value by simulation and quotes wider when unsure; ~15% of bids are deliberately off, giving you flow to pick off.</p>
       </div>
 
       <div id="lobby-section" class="hidden">
