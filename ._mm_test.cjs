@@ -1,0 +1,26 @@
+const { io } = require('./node_modules/socket.io/client-dist/socket.io.js');
+const wait=(s,e,ms=6000)=>new Promise((res,rej)=>{const t=setTimeout(()=>rej(new Error('timeout '+e)),ms);s.once(e,v=>{clearTimeout(t);res(v);});});
+const mk=()=>io('http://localhost:3000',{forceNew:true,transports:['websocket']});
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const out=[];const log=(...a)=>out.push(a.join(' '));
+(async()=>{
+  const A=mk();await wait(A,'connect');A.emit('joinRoom','main');await wait(A,'config');
+  A.emit('join','Alice');await wait(A,'joined');
+  const B=mk();await wait(B,'connect');B.emit('joinRoom','main');await wait(B,'config');
+  B.emit('join','Bob');await wait(B,'joined');await sleep(100);log('both joined');
+  A.emit('applySettings',{assetClass:'dice',numAssets:4,numRounds:4,privatePerPlayer:0,contractId:'sum',marketMaking:true,roundDuration:0,positionLimit:100});
+  await wait(A,'bidPhaseOpen');await wait(B,'bidPhaseOpen');log('bid open');
+  A.emit('submitBid',2);B.emit('submitBid',3);await wait(A,'bidPhaseResolved');log('resolved');
+  let mS=null,mm=null;await new Promise(r=>{const h=s=>m=>{if(!mS){mS=s;mm=m.margin;r();}};A.once('setMarketPrompt',h(A));B.once('setMarketPrompt',h(B));});
+  log('maker',mS===A?'Alice':'Bob','margin',mm);
+  mS.emit('setMarket',{bid:10,ask:10+mm});await sleep(150);
+  const taker=mS===A?'Bob':'Alice';
+  let s1=await new Promise(r=>{A.once('state',r);A.emit('resync');});
+  log('before advance: taker='+taker+' pos='+s1.players.find(p=>p.name===taker).position);
+  A.emit('nextRound');await sleep(250);
+  let s2=await new Promise(r=>{A.once('state',r);A.emit('resync');});
+  const after=s2.players.find(p=>p.name===taker);const forced=s2.trades.filter(t=>t.forced);
+  log('after advance: pos='+after.position+' forcedInTape='+forced.length);
+  log((after.position!==0&&forced.length>=1)?'VERDICT FORCED-TRADE OK':'VERDICT FAIL');
+  require('fs').writeFileSync('/tmp/mmtest.out',out.join('\n'));process.exit(0);
+})().catch(e=>{require('fs').writeFileSync('/tmp/mmtest.out','ERROR '+e.message);process.exit(1);});

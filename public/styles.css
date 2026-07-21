@@ -328,6 +328,11 @@ main {
   background: var(--gold); color: #000;
   border-radius: 3px; padding: 1px 4px; margin-left: 4px; vertical-align: middle;
 }
+.forced-tag {
+  display: inline-block; font-size: 10px; font-weight: 700;
+  background: var(--muted); color: #000;
+  border-radius: 3px; padding: 1px 4px; margin-left: 4px; vertical-align: middle;
+}
 .host-tag {
   display: inline-block; font-size: 10px; font-weight: 700;
   background: var(--accent); color: #fff;

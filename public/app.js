@@ -402,16 +402,21 @@ socket.on('tradeError', (text) => {
 });
 
 // ---------- State render ----------
-socket.on('state', ({ game, players, trades, lastPrice, mm, orderBook, roundEndsAt, roundTradeCount, roundTradeLimit }) => {
+socket.on('state', ({ game, players, trades, lastPrice, mm, orderBook, roundEndsAt, roundTradeCount, roundTradeLimit, roundNetPos, roundNetLimit }) => {
   currentMM = mm;
   isMMMode = game.marketMaking;
   startCountdown(roundEndsAt);
   const me = players.find(p => p.id === myId);
   const amMaker = mm?.phase === 'trading' && myId === mm.makerId;
   const myRoundTrades = (me && !amMaker) ? (roundTradeCount?.[me.name] ?? 0) : null;
-  $('pos-limit-display').textContent = myRoundTrades !== null
-    ? `${roundTradeLimit - myRoundTrades}/${roundTradeLimit} trades left`
-    : '—';
+  if (myRoundTrades !== null) {
+    const net = roundNetPos?.[me.name] ?? 0;
+    const lim = roundNetLimit ?? 10;
+    $('pos-limit-display').textContent =
+      `${roundTradeLimit - myRoundTrades}/${roundTradeLimit} trades · net ${net > 0 ? '+' : ''}${net} (±${lim})`;
+  } else {
+    $('pos-limit-display').textContent = '—';
+  }
 
   // If market is already open and we're a taker, dismiss any blocking overlays
   // (handles late joiners who missed the bid/quote events).
@@ -584,9 +589,10 @@ function renderTape(trades) {
     const row = document.createElement('div');
     row.className = 'tape-row';
     if (t.mmRound) {
-      // MM trade: one taker, recorded with side.
+      // MM trade: one taker, recorded with side. `forced` = auto-trade for an idle taker.
+      const forcedTag = t.forced ? ' <span class="forced-tag">AUTO</span>' : '';
       row.innerHTML = `
-        <span class="${t.side}">${t.side.toUpperCase()} ${t.qty} @ ${t.price} <span class="mm-tag">MM</span></span>
+        <span class="${t.side}">${t.side.toUpperCase()} ${t.qty} @ ${t.price} <span class="mm-tag">MM</span>${forcedTag}</span>
         <span class="tt">${escapeHtml(t.trader)} · R${t.round}</span>
       `;
     } else {

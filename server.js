@@ -41,6 +41,7 @@ function getRoom(roomId) {
       trades: [],
       tradeCount: {},
       roundTradeCount: {},
+      roundNetPos: {},
       players: {},
       playersByName: {},
       hostId: null,
@@ -68,9 +69,23 @@ function isHost(room, socketId) {
 }
 
 const ROUND_TRADE_LIMIT = 3;
+// Max cumulative NET position change a non-maker may take across their trades
+// in a single round (|buys - sells| this round ≤ this).
+const ROUND_NET_LIMIT = 10;
 
 function withinRoundTradeLimit(room, playerName) {
   return (room.roundTradeCount[playerName] ?? 0) < ROUND_TRADE_LIMIT;
+}
+
+// Signed net qty a player has traded this round (+ for net buy, − for net sell).
+function roundNet(room, playerName) {
+  return room.roundNetPos[playerName] ?? 0;
+}
+
+// Would a signed delta (qty for buy, −qty for sell) keep the player's round-net
+// change within ±ROUND_NET_LIMIT?
+function withinRoundNetLimit(room, playerName, signedDelta) {
+  return Math.abs(roundNet(room, playerName) + signedDelta) <= ROUND_NET_LIMIT;
 }
 
 function clearRoundTimer(room) {
@@ -97,10 +112,14 @@ function advanceRound(roomId) {
   const room = rooms[roomId];
   if (!room || isClosed(room)) return;
   clearRoundTimer(room);
+  // MM mode: every non-maker must buy or sell each round. Force idle takers into
+  // a default trade before the round's maker/quote is cleared.
+  if (room.settings.marketMaking) forceIdleTakers(room);
   room.game.round += 1;
   room.mm = null;
   room.orderBook = { bids: [], asks: [] };
   room.roundTradeCount = {};
+  room.roundNetPos = {};
   if (isClosed(room)) {
     settleAll(room);
     broadcast(roomId);
@@ -194,6 +213,8 @@ function broadcast(roomId) {
     roundEndsAt: room.roundEndsAt,
     roundTradeCount: room.roundTradeCount,
     roundTradeLimit: ROUND_TRADE_LIMIT,
+    roundNetPos: room.roundNetPos,
+    roundNetLimit: ROUND_NET_LIMIT,
   });
 }
 
@@ -209,6 +230,7 @@ function startGame(roomId, rawSettings) {
   room.trades = [];
   room.tradeCount = {};
   room.roundTradeCount = {};
+  room.roundNetPos = {};
   room.mm = null;
   room.orderBook = { bids: [], asks: [] };
   room.playersByName = {};
@@ -266,6 +288,59 @@ function recordTrade(room, ...playerNames) {
   for (const name of playerNames) {
     room.tradeCount[name] = (room.tradeCount[name] ?? 0) + 1;
     room.roundTradeCount[name] = (room.roundTradeCount[name] ?? 0) + 1;
+  }
+}
+
+// Execute a taker trade against the current maker's quote (MM mode). `side` is
+// 'buy' (lifts the ask) or 'sell' (hits the bid). Handles cash/position for
+// both taker and maker, records the trade, and appends it to the tape.
+// `forced` marks auto-trades applied to non-makers who didn't trade the round.
+function executeMakerTrade(room, takerId, side, qty, forced = false) {
+  if (!room.mm || room.mm.phase !== 'trading') return false;
+  const taker = room.players[takerId];
+  const maker = room.players[room.mm.makerId];
+  if (!taker || !maker || takerId === room.mm.makerId) return false;
+
+  const price = side === 'buy' ? room.mm.ask : room.mm.bid;
+  const cost = qty * price;
+  if (side === 'buy') {
+    taker.cash -= cost; taker.position += qty;
+    maker.cash += cost; maker.position -= qty;
+  } else {
+    taker.cash += cost; taker.position -= qty;
+    maker.cash -= cost; maker.position += qty;
+  }
+  room.trades.push({
+    round: room.game.round,
+    trader: taker.name,
+    side,
+    qty,
+    price: Math.round(price * 100) / 100,
+    ts: Date.now(),
+    mmRound: true,
+    forced: forced || undefined,
+  });
+  recordTrade(room, taker.name, maker.name);
+  // Track the taker's signed net position change this round for the ±net limit.
+  room.roundNetPos[taker.name] = roundNet(room, taker.name) + (side === 'buy' ? qty : -qty);
+  syncPlayerByName(room, takerId);
+  syncPlayerByName(room, room.mm.makerId);
+  return true;
+}
+
+// Before an MM trading round ends, force any connected non-maker who hasn't
+// traded this round into a default trade (random side, qty 1) against the
+// maker's quote — so every taker must buy or sell something each round.
+function forceIdleTakers(room) {
+  if (!room.mm || room.mm.phase !== 'trading') return;
+  for (const [sid, p] of Object.entries(room.players)) {
+    if (!p.connected) continue;
+    if (sid === room.mm.makerId) continue;
+    if ((room.roundTradeCount[p.name] ?? 0) > 0) continue;
+    const side = Math.random() < 0.5 ? 'buy' : 'sell';
+    if (executeMakerTrade(room, sid, side, 1, true)) {
+      io.to(sid).emit('tradeError', `You didn't trade this round — auto-executed ${side} 1 at the maker's quote.`);
+    }
   }
 }
 
@@ -455,7 +530,7 @@ io.on('connection', (socket) => {
   });
 
   // MM mode: non-maker trades at the fixed bid/ask set by the maker.
-  socket.on('trade', ({ side, qty, price }) => {
+  socket.on('trade', ({ side, qty }) => {
     if (!roomId) return;
     const room = getRoom(roomId);
     const p = room.players[socket.id];
@@ -463,42 +538,20 @@ io.on('connection', (socket) => {
     if (isClosed(room)) return;
     if (!room.mm || room.mm.phase !== 'trading') return;
     if (socket.id === room.mm.makerId) return;
+    if (side !== 'buy' && side !== 'sell') return;
 
     qty = Math.max(1, Math.min(100, parseInt(qty, 10) || 0));
-    if (side === 'buy') price = room.mm.ask;
-    else if (side === 'sell') price = room.mm.bid;
-    else return;
-
-    const maker = room.players[room.mm.makerId];
-    if (!maker) return;
-    const cost = qty * price;
     if (!withinRoundTradeLimit(room, p.name)) {
       socket.emit('tradeError', `Round trade limit (${ROUND_TRADE_LIMIT}) reached — wait for next round.`);
       return;
     }
-    if (side === 'buy') {
-      p.cash -= cost;
-      p.position += qty;
-      maker.cash += cost;
-      maker.position -= qty;
-    } else {
-      p.cash += cost;
-      p.position -= qty;
-      maker.cash -= cost;
-      maker.position += qty;
+    const signedDelta = side === 'buy' ? qty : -qty;
+    if (!withinRoundNetLimit(room, p.name, signedDelta)) {
+      const net = roundNet(room, p.name);
+      socket.emit('tradeError', `Round net position limit (±${ROUND_NET_LIMIT}) reached — your net this round is ${net > 0 ? '+' : ''}${net}.`);
+      return;
     }
-    room.trades.push({
-      round: room.game.round,
-      trader: p.name,
-      side,
-      qty,
-      price: Math.round(price * 100) / 100,
-      ts: Date.now(),
-      mmRound: true,
-    });
-    recordTrade(room, p.name, room.players[room.mm.makerId]?.name);
-    syncPlayerByName(room, socket.id);
-    syncPlayerByName(room, room.mm.makerId);
+    executeMakerTrade(room, socket.id, side, qty);
     broadcast(roomId);
   });
 
@@ -675,6 +728,7 @@ io.on('connection', (socket) => {
     room.trades = [];
     room.tradeCount = {};
     room.roundTradeCount = {};
+    room.roundNetPos = {};
     room.game.round = 0;
     broadcast(roomId);
     io.to(roomId).emit('openSettings');
