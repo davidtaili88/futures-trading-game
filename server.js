@@ -99,7 +99,7 @@ function withinRoundNetLimit(room, playerName, signedDelta) {
 const BOT_MISTAKE_RATE = 0.15;   // chance per bidding turn to bid off-model
 const BOT_MARGIN_K = 0.6;        // bid margin ≈ K * stdev (confidence-scaled)
 const BOT_TAKE_EDGE_K = 0.5;     // take only if |fair - quote| > K * stdev
-const BOT_MIN_MARGIN = 1;        // floor so margins stay ≥ 1 and integer
+const BOT_MIN_MARGIN = 0.1;      // floor: confident bots can quote as tight as 0.1
 const BOT_ACT_MIN_MS = 500;      // action jitter lower bound
 const BOT_ACT_MAX_MS = 3000;     // action jitter upper bound
 
@@ -147,37 +147,56 @@ function botBidMargin(est) {
   } else {
     margin = BOT_MARGIN_K * est.stdev * jitter;
   }
-  return Math.max(BOT_MIN_MARGIN, Math.round(margin));
+  // Round to 0.1 so a confident bot (tiny stdev) can bid as tight as 0.1.
+  return Math.max(BOT_MIN_MARGIN, round1(margin));
+}
+
+// Round to 1 decimal place (0.1 granularity).
+function round1(x) {
+  return Math.round(x * 10) / 10;
 }
 
 // Bot's bid/ask when it wins the maker role: centered on its fair estimate,
-// with spread exactly equal to the winning margin (server requires spread==margin).
+// with spread exactly equal to the winning margin (server requires spread==margin
+// after 2-decimal rounding). Both sides rounded to 0.1 so fractional margins hold.
 function botQuote(est, margin) {
-  const half = margin / 2;
-  const bid = Math.round(est.fair - half);
-  return { bid, ask: bid + margin };
+  const bid = round1(est.fair - margin / 2);
+  return { bid, ask: round1(bid + margin) };
 }
 
 // Bot taker decision vs a maker's quote. Returns { side, qty } or null.
 // Buys if the ask is well below fair; sells if the bid is well above fair;
 // the "well" threshold scales with the bot's own uncertainty so it won't get
 // picked off on high-variance contracts.
-function botTakeDecision(room, botPlayer, est) {
+//
+// Every non-maker MUST trade at least once per round. When `requireMinimum` is
+// true (the bot's first evaluation and it hasn't traded yet), a bot with no
+// clear edge still trades 1 lot on the LESS-BAD side (the side of the quote
+// closer to its fair estimate) — a deliberate decision, not a random fill.
+function botTakeDecision(room, botPlayer, est, requireMinimum = false) {
   if (!room.mm || room.mm.phase !== 'trading') return null;
+  if (!withinRoundTradeLimit(room, botPlayer.name)) return null;
   const edge = BOT_TAKE_EDGE_K * est.stdev;
   const { bid, ask } = room.mm;
+
   let side = null;
+  let maxQty = 4;
   if (est.fair - ask > edge) side = 'buy';
   else if (bid - est.fair > edge) side = 'sell';
+  else if (requireMinimum) {
+    // No edge, but must trade ≥1: pick the less-bad side. Buying costs (ask-fair);
+    // selling costs (fair-bid). Take the cheaper mistake; trade only 1 lot.
+    side = (ask - est.fair) <= (est.fair - bid) ? 'buy' : 'sell';
+    maxQty = 1;
+  }
   if (!side) return null;
 
-  // Size: small lot (≤4), clamped so |net ± qty| stays within ROUND_NET_LIMIT.
-  if (!withinRoundTradeLimit(room, botPlayer.name)) return null;
+  // Size: small lot, clamped so |net ± qty| stays within ROUND_NET_LIMIT.
   const net = roundNet(room, botPlayer.name);
   const dir = side === 'buy' ? 1 : -1;
   // Largest q with |net + dir*q| ≤ LIMIT: buy caps at LIMIT - net, sell at LIMIT + net.
   const headroom = dir > 0 ? ROUND_NET_LIMIT - net : ROUND_NET_LIMIT + net;
-  const qty = Math.max(0, Math.min(4, headroom));
+  const qty = Math.max(0, Math.min(maxQty, headroom));
   if (qty <= 0) return null;
   return { side, qty };
 }
@@ -629,7 +648,11 @@ function scheduleBotTakes(roomId) {
         if (r.game.round !== roundAtSchedule) return;
         if (!r.players[id] || id === r.mm.makerId) return;
         const est = botEstimate(r, r.players[id]);
-        const decision = botTakeDecision(r, r.players[id], est);
+        // On the final attempt, if the bot still hasn't traded this round, it
+        // MUST trade ≥1 (requireMinimum) — deciding the less-bad side itself.
+        const mustTrade = n === 1 && (roundNet(r, r.players[id].name) === 0) &&
+          ((r.roundTradeCount[r.players[id].name] ?? 0) === 0);
+        const decision = botTakeDecision(r, r.players[id], est, mustTrade);
         if (decision) {
           executeMakerTrade(r, id, decision.side, decision.qty);
           broadcast(roomId);
