@@ -688,10 +688,22 @@ io.on('connection', (socket) => {
     const saved = room.playersByName[clean];
     if (saved) {
       // Returning player with same name — restore their state.
-      // Remove any old socket entry for this name so there's no duplicate.
+      // Remove any old socket entry for this name so there's no duplicate,
+      // remembering the old id so we can remap any MM references to it.
+      let oldId = null;
       for (const [sid, p] of Object.entries(room.players)) {
-        if (p.name === clean && sid !== socket.id) delete room.players[sid];
+        if (p.name === clean && sid !== socket.id) { oldId = sid; delete room.players[sid]; }
       }
+      // Remap live market-making state keyed by the old socket id, so a reload
+      // by the maker (or a bidder) doesn't strand the MM phase on a dead id.
+      if (oldId && room.mm) {
+        if (room.mm.makerId === oldId) room.mm.makerId = socket.id;
+        if (room.mm.bids && room.mm.bids[oldId] !== undefined) {
+          room.mm.bids[socket.id] = room.mm.bids[oldId];
+          delete room.mm.bids[oldId];
+        }
+      }
+      if (oldId && room.hostId === oldId) room.hostId = socket.id;
       room.players[socket.id] = {
         id: socket.id,
         name: clean,
@@ -706,6 +718,11 @@ io.on('connection', (socket) => {
         : null;
       socket.emit('hints', hintCard ? [stripHintForClient(hintCard)] : []);
       socket.emit('privateAssets', saved.privateAssets ?? []);
+      // If this returning player is the maker mid-quote, re-prompt them to set
+      // the market — the original prompt went to their now-dead socket.
+      if (room.mm && room.mm.phase === 'quoting' && room.mm.makerId === socket.id) {
+        socket.emit('setMarketPrompt', { margin: room.mm.margin });
+      }
     } else {
       // New player — fresh state.
       room.players[socket.id] = {

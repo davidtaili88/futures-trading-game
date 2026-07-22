@@ -472,7 +472,9 @@ socket.on('state', ({ game, players, trades, lastPrice, mm, orderBook, roundEnds
 
   $('buy-btn').disabled = settled || blocked;
   $('sell-btn').disabled = settled || blocked;
-  $('next-round-btn').disabled = settled || blocked;
+  // Host can always advance the round — advanceRound works in any MM phase, so
+  // this stays enabled even during bidding/quoting as a recovery escape hatch.
+  $('next-round-btn').disabled = settled;
   $('next-round-btn').textContent = settled ? 'Settled' : 'Next Round ▶';
 
   if (isMMMode) {
@@ -482,6 +484,25 @@ socket.on('state', ({ game, players, trades, lastPrice, mm, orderBook, roundEnds
     // Show price input only for market maker.
     const priceLabel = $('price').closest('label');
     if (priceLabel) priceLabel.style.display = (mm?.phase === 'trading' && !isMaker) ? 'none' : '';
+
+    // Reconnect recovery: a player who reloaded during the bidding phase missed
+    // the bidPhaseOpen event. If we're still in bidding and haven't bid yet,
+    // re-show the bid overlay so we can participate (and the round can resolve).
+    if (mm?.phase === 'bidding') {
+      const iHaveBid = (mm.bidderIds || []).includes(myId);
+      if (!iHaveBid && $('bid-overlay').classList.contains('hidden')) {
+        $('bid-status').textContent = '';
+        $('bid-waiting').classList.add('hidden');
+        $('bid-submit-btn').disabled = false;
+        $('bid-overlay').classList.remove('hidden');
+      }
+    }
+    // Once trading is live, make sure no stale bid/quote overlay is covering it.
+    if (mm?.phase === 'trading') {
+      $('bid-overlay').classList.add('hidden');
+      $('quote-overlay').classList.add('hidden');
+      $('quote-wait-overlay').classList.add('hidden');
+    }
   } else {
     $('buy-btn').textContent = 'BID';
     $('sell-btn').textContent = 'ASK';
