@@ -10,15 +10,6 @@
 //                contract). If numRounds > numAssets, the extra rounds are
 //                pure trading with no new reveal.
 
-// ---------- Random helpers ----------
-function shuffle(arr) {
-  const a = arr.slice();
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
 
 // ---------- Asset-class definitions ----------
 // Each class knows how to draw N assets and the theoretical distribution of a
@@ -31,28 +22,24 @@ const ASSET_CLASSES = {
   cards: {
     label: 'Cards',
     unit: 'card',
-    // Standard 52-card deck, drawn without replacement. Value = rank (A=1…K=13).
+    // Cards drawn WITH replacement: each card is an independent uniform rank
+    // (A=1…K=13) with a random suit. With replacement keeps every asset iid, so
+    // each unseen card's EV is a flat 7 regardless of what's revealed — matching
+    // dice/numbers and simplifying EV for players and bots alike. (Ranks and
+    // suits can therefore repeat across the drawn cards.)
     draw(n) {
       const suits = ['♠', '♥', '♦', '♣'];
-      const ranks = [
-        { label: 'A', value: 1 }, { label: '2', value: 2 }, { label: '3', value: 3 },
-        { label: '4', value: 4 }, { label: '5', value: 5 }, { label: '6', value: 6 },
-        { label: '7', value: 7 }, { label: '8', value: 8 }, { label: '9', value: 9 },
-        { label: '10', value: 10 }, { label: 'J', value: 11 }, { label: 'Q', value: 12 },
-        { label: 'K', value: 13 },
-      ];
-      const deck = [];
-      for (const s of suits) {
-        for (const r of ranks) {
-          deck.push({ kind: 'card', label: `${r.label}${s}`, value: r.value, red: s === '♥' || s === '♦' });
-        }
-      }
-      return shuffle(deck).slice(0, n);
+      const rankLabels = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+      return Array.from({ length: n }, () => {
+        const value = 1 + Math.floor(Math.random() * 13);
+        const s = suits[Math.floor(Math.random() * suits.length)];
+        return { kind: 'card', label: `${rankLabels[value - 1]}${s}`, value, red: s === '♥' || s === '♦' };
+      });
     },
     sampleValue() {
       return 1 + Math.floor(Math.random() * 13);
     },
-    maxAssets: 13, // keep it sane; plenty for a single suit's worth
+    maxAssets: 13,
   },
 
   dice: {

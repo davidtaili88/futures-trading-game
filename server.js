@@ -802,11 +802,6 @@ io.on('connection', (socket) => {
     if (!isFinite(price)) return;
     if (side !== 'bid' && side !== 'ask') return;
 
-    if (!withinRoundTradeLimit(room, p.name)) {
-      socket.emit('tradeError', `Round trade limit (${ROUND_TRADE_LIMIT}) reached — wait for next round.`);
-      return;
-    }
-
     const orderId = `${socket.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     room.orderBook[side === 'bid' ? 'bids' : 'asks'].push({ id: orderId, socketId: socket.id, price, qty, name: p.name });
     tryMatchOrders(room);
@@ -833,10 +828,6 @@ io.on('connection', (socket) => {
     const { price, qty } = order;
     const cost = qty * price;
 
-    if (!withinRoundTradeLimit(room, taker.name)) {
-      socket.emit('tradeError', `Round trade limit (${ROUND_TRADE_LIMIT}) reached — wait for next round.`);
-      return;
-    }
     if (side === 'bid') {
       taker.cash += cost;
       taker.position -= qty;
@@ -890,7 +881,10 @@ io.on('connection', (socket) => {
     if (!room.mm || room.mm.phase !== 'bidding') return;
     margin = parseFloat(margin);
     if (!isFinite(margin) || margin <= 0) return;
-    room.mm.bids[socket.id] = Math.round(margin * 100) / 100;
+    // Enforce a 0.1 floor: a margin that rounds to 0 (e.g. 0.004) would win the
+    // maker role with a zero spread, and setMarket can never accept ask<=bid —
+    // that deadlocks the round in the 'quoting' phase forever.
+    room.mm.bids[socket.id] = Math.max(0.1, Math.round(margin * 100) / 100);
     broadcast(roomId);
 
     // Auto-resolve once every connected player has bid.

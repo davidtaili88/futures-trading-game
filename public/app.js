@@ -306,7 +306,7 @@ $('quote-submit-btn').addEventListener('click', () => {
 
 $('bid-submit-btn').addEventListener('click', () => {
   const margin = parseFloat($('bid-input').value);
-  if (!isFinite(margin) || margin <= 0) { $('bid-status').textContent = 'Enter a positive margin.'; return; }
+  if (!isFinite(margin) || margin < 0.1) { $('bid-status').textContent = 'Enter a margin of at least 0.1.'; return; }
   socket.emit('submitBid', margin);
   $('bid-submit-btn').disabled = true;
   $('bid-waiting').classList.remove('hidden');
@@ -428,7 +428,9 @@ socket.on('state', ({ game, players, trades, lastPrice, mm, orderBook, roundEnds
   startCountdown(roundEndsAt);
   const me = players.find(p => p.id === myId);
   const amMaker = mm?.phase === 'trading' && myId === mm.makerId;
-  const myRoundTrades = (me && !amMaker) ? (roundTradeCount?.[me.name] ?? 0) : null;
+  // The per-round trade/net limits only apply in market-making mode; open-outcry
+  // (non-MM) mode has no round trade limit, so don't show a limit counter there.
+  const myRoundTrades = (isMMMode && me && !amMaker) ? (roundTradeCount?.[me.name] ?? 0) : null;
   if (myRoundTrades !== null) {
     const net = roundNetPos?.[me.name] ?? 0;
     const lim = roundNetLimit ?? 10;
