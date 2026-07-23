@@ -847,6 +847,12 @@ io.on('connection', (socket) => {
       round: room.game.round,
       buyer: side === 'ask' ? taker.name : maker.name,
       seller: side === 'bid' ? taker.name : maker.name,
+      // The taker is the aggressor: hitting a resting bid means selling,
+      // lifting a resting ask means buying. Recorded so the tape can frame
+      // each print as "taker bought/sold from maker".
+      taker: taker.name,
+      maker: maker.name,
+      takerSide: side === 'bid' ? 'sold' : 'bought',
       qty,
       price: Math.round(price * 100) / 100,
       ts: Date.now(),

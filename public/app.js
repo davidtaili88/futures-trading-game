@@ -640,10 +640,19 @@ function renderTape(trades) {
         <span class="tt">${escapeHtml(t.trader)} · R${t.round}</span>
       `;
     } else {
-      // Open-outcry trade: bilateral — spell out who bought and who sold.
+      // Open-outcry trade. When a taker hit a resting order, frame it from the
+      // taker's side: "taker bought/sold from maker". Auto-matched crossing
+      // limit orders have no taker, so fall back to buyer/seller.
+      let detail;
+      if (t.taker && t.takerSide) {
+        const sideClass = t.takerSide === 'bought' ? 'buy' : 'sell';
+        detail = `<span class="${sideClass}">${escapeHtml(t.taker)} ${t.takerSide}</span> from ${escapeHtml(t.maker)}`;
+      } else {
+        detail = `<span class="buy">${escapeHtml(t.buyer)} bought</span> from <span class="sell">${escapeHtml(t.seller)}</span>`;
+      }
       row.innerHTML = `
         <span class="buy">${t.qty} @ ${t.price}</span>
-        <span class="tt"><span class="buy">${escapeHtml(t.buyer)} bought</span> from <span class="sell">${escapeHtml(t.seller)}</span> · R${t.round}</span>
+        <span class="tt">${detail} · R${t.round}</span>
       `;
     }
     tape.appendChild(row);
