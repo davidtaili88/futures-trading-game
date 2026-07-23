@@ -640,10 +640,10 @@ function renderTape(trades) {
         <span class="tt">${escapeHtml(t.trader)} · R${t.round}</span>
       `;
     } else {
-      // Open-outcry trade: bilateral, show buyer vs seller.
+      // Open-outcry trade: bilateral — spell out who bought and who sold.
       row.innerHTML = `
         <span class="buy">${t.qty} @ ${t.price}</span>
-        <span class="tt">${escapeHtml(t.buyer)} / ${escapeHtml(t.seller)} · R${t.round}</span>
+        <span class="tt"><span class="buy">${escapeHtml(t.buyer)} bought</span> from <span class="sell">${escapeHtml(t.seller)}</span> · R${t.round}</span>
       `;
     }
     tape.appendChild(row);
