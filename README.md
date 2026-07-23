@@ -11,7 +11,7 @@ at the true value. Highest PnL wins.
 - **Per-room isolation** — each URL hash (`/#room-name`) is a separate independent game.
 - **Configurable game settings** at the start of every game:
   - **Asset class** — Cards (A=1…K=13), Dice (d6), or Numbers (1–20).
-  - **Contract type** — Sum, Product, Odds minus Evens, High-Low Spread, Max plus Min, or Random.
+  - **Contract type** — Sum, Product, Odds minus Evens, High-Low Spread, Max plus Min, Median, Second Highest, Sum of Squares, Max times Min, Count ≥ K, High − Low − Mean, Top-two minus Bottom-two, or Random.
   - **Number of assets** and **number of rounds**.
 - **Per-player hints** — each player gets one randomly assigned hint (Min, Max, Mean, or Asset Range), hidden by default.
 - **Market Making Mode** — before each round, players bid a spread margin. The tightest quote wins and becomes the market maker, setting their own bid/ask prices. All other players trade at those prices.
