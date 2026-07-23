@@ -90,13 +90,20 @@ function withinRoundNetLimit(room, playerName, signedDelta) {
   return Math.abs(roundNet(room, playerName) + signedDelta) <= ROUND_NET_LIMIT;
 }
 
-// Open-outcry (non-MM) absolute position cap. Would applying a signed delta
-// (+qty buy, −qty sell) keep |position| within the room's positionLimit?
+// Open-outcry (non-MM) position limit. This caps the player's NET position
+// change WITHIN THE CURRENT ROUND (reset every round), not their total position
+// across the whole game. Would applying a signed delta (+qty buy, −qty sell)
+// keep |round-net| within the room's positionLimit?
 function positionLimit(room) {
   return room.settings.positionLimit ?? 10;
 }
 function withinLimit(room, player, signedDelta) {
-  return Math.abs((player.position ?? 0) + signedDelta) <= positionLimit(room);
+  return Math.abs(roundNet(room, player.name) + signedDelta) <= positionLimit(room);
+}
+
+// Apply a player's signed round-net change after a non-MM fill (+qty buy, −qty sell).
+function applyRoundNet(room, playerName, signedDelta) {
+  room.roundNetPos[playerName] = roundNet(room, playerName) + signedDelta;
 }
 
 // ---------- Bots (market-making mode only) ----------
@@ -111,11 +118,21 @@ const BOT_TAKE_EDGE_K = 0.5;     // take only if |fair - quote| > K * stdev
 const BOT_MIN_MARGIN = 0.1;      // floor: confident bots can quote as tight as 0.1
 const BOT_ACT_MIN_MS = 500;      // action jitter lower bound
 const BOT_ACT_MAX_MS = 3000;     // action jitter upper bound
-// Open-outcry (non-MM) bot tuning.
-const BOT_OO_SPREAD_K = 0.8;     // resting quote half-spread ≈ K * stdev around fair
+// Open-outcry (non-MM) bot tuning. Bots quote a fairly TIGHT two-sided market
+// around their own fair estimate, and take any resting order that sits on the
+// favorable side of their fair by more than a small threshold. Because bots hold
+// different hints/private cards, their fairs differ, so there are near-always
+// crossable opportunities — producing continuous flow — yet a bot still declines
+// to trade when a price is within its "fair" band.
+const BOT_OO_SPREAD_K = 0.35;    // resting quote half-spread ≈ K * stdev around fair
 const BOT_OO_MIN_HALF = 0.5;     // minimum half-spread so quotes aren't degenerate
-const BOT_OO_MAX_LOT = 5;        // max lot a bot posts/takes at once
-const BOT_OO_ACTIONS = 6;        // action attempts per bot per round
+const BOT_OO_MAX_LOT = 5;        // max lot a bot posts on each side of its quote
+const BOT_OO_TAKE_LOT = 3;       // max lot a bot lifts/hits in one take (1..N)
+// A bot takes a resting order when it's better than fair by more than this edge.
+// Small (mostly a fixed floor) so genuine opportunities are acted on, but nonzero
+// so a price AT fair is left alone — "don't trade if it thinks it's fair".
+const BOT_OO_EDGE_K = 0.15;      // take if |fair − price| > K * stdev …
+const BOT_OO_EDGE_MIN = 0.4;     // … but always require at least this much edge
 
 function isBot(player) {
   return !!(player && player.isBot);
@@ -545,6 +562,8 @@ function tryMatchOrders(room) {
       ts: Date.now(),
     });
     recordTrade(room, buyer.name, seller.name);
+    applyRoundNet(room, buyer.name, +execQty);
+    applyRoundNet(room, seller.name, -execQty);
     syncPlayerByName(room, bestBid.socketId);
     syncPlayerByName(room, bestAsk.socketId);
 
@@ -686,14 +705,23 @@ function scheduleBotTakes(roomId) {
 // Execute a bot taking a specific resting order. Mirrors the human takeOrder
 // handler: same cash/position bookkeeping, position cap, and trade record
 // (with taker/maker framing). `side` is the book the order rests on ('bid'|'ask').
-function botExecuteTake(room, botId, order, side) {
+function botExecuteTake(room, botId, order, side, maxQty = Infinity) {
   const taker = room.players[botId];
   const maker = room.players[order.socketId];
   if (!taker || !maker || order.socketId === botId) return false;
-  const { price, qty } = order;
-  const takerDelta = side === 'bid' ? -qty : +qty;
-  if (!withinLimit(room, taker, takerDelta)) return false;
-  if (!withinLimit(room, maker, -takerDelta)) return false;
+  const price = order.price;
+  const dir = side === 'bid' ? -1 : +1; // taker sells into a bid, buys from an ask
+  // Fill only as much as the taker's remaining round-net headroom allows, and no
+  // more than the resting order (partial fills leave the remainder resting).
+  const cap = positionLimit(room);
+  const takerNet = roundNet(room, taker.name);
+  const takerRoom = dir > 0 ? cap - takerNet : cap + takerNet;
+  const makerNet = roundNet(room, maker.name);
+  const makerRoom = dir > 0 ? cap + makerNet : cap - makerNet; // maker takes the other side
+  const qty = Math.max(0, Math.min(order.qty, maxQty, takerRoom, makerRoom));
+  if (qty <= 0) return false;
+
+  const takerDelta = dir * qty;
   const cost = qty * price;
   if (side === 'bid') {
     taker.cash += cost; taker.position -= qty;
@@ -702,8 +730,12 @@ function botExecuteTake(room, botId, order, side) {
     taker.cash -= cost; taker.position += qty;
     maker.cash += cost; maker.position -= qty;
   }
-  room.orderBook[side === 'bid' ? 'bids' : 'asks'] =
-    room.orderBook[side === 'bid' ? 'bids' : 'asks'].filter(o => o.id !== order.id);
+  // Reduce the resting order; drop it only when fully consumed.
+  order.qty -= qty;
+  if (order.qty <= 0) {
+    room.orderBook[side === 'bid' ? 'bids' : 'asks'] =
+      room.orderBook[side === 'bid' ? 'bids' : 'asks'].filter(o => o.id !== order.id);
+  }
   room.trades.push({
     round: room.game.round,
     buyer: side === 'ask' ? taker.name : maker.name,
@@ -716,6 +748,8 @@ function botExecuteTake(room, botId, order, side) {
     ts: Date.now(),
   });
   recordTrade(room, taker.name, maker.name);
+  applyRoundNet(room, taker.name, takerDelta);
+  applyRoundNet(room, maker.name, -takerDelta);
   syncPlayerByName(room, botId);
   syncPlayerByName(room, order.socketId);
   return true;
@@ -738,9 +772,11 @@ function botPostQuote(room, botId, est) {
   if (!(askPrice > bidPrice)) return false;
 
   const cap = positionLimit(room);
-  // Room to buy before hitting +cap, room to sell before hitting −cap.
-  const buyHeadroom = Math.max(0, cap - bot.position);
-  const sellHeadroom = Math.max(0, cap + bot.position);
+  // Size each side against the bot's remaining round-net headroom (the limit is
+  // per-round net, not total position), so it can always honor its own quote.
+  const net = roundNet(room, bot.name);
+  const buyHeadroom = Math.max(0, cap - net);
+  const sellHeadroom = Math.max(0, cap + net);
   const bidQty = Math.min(BOT_OO_MAX_LOT, buyHeadroom);
   const askQty = Math.min(BOT_OO_MAX_LOT, sellHeadroom);
 
@@ -765,7 +801,10 @@ function botOpenOutcryAction(room, botId) {
   const bot = room.players[botId];
   if (!bot) return;
   const est = botEstimate(room, bot);
-  const edge = BOT_TAKE_EDGE_K * est.stdev;
+  // How far a resting price must stray from fair before the bot calls it an
+  // opportunity. Scales with the bot's uncertainty, with an absolute floor so a
+  // very confident bot still trades on small-but-real mispricings.
+  const edge = Math.max(BOT_OO_EDGE_MIN, BOT_OO_EDGE_K * est.stdev);
 
   // Best resting ask below fair → lift it (buy). Best resting bid above fair → hit it (sell).
   const others = (list) => list.filter(o => o.socketId !== botId);
@@ -774,38 +813,49 @@ function botOpenOutcryAction(room, botId) {
   const bestAsk = asks.length ? asks.reduce((a, b) => b.price < a.price ? b : a) : null;
   const bestBid = bids.length ? bids.reduce((a, b) => b.price > a.price ? b : a) : null;
 
-  if (bestAsk && est.fair - bestAsk.price > edge && withinLimit(room, bot, +1)) {
-    botExecuteTake(room, botId, bestAsk, 'ask');
+  // Take the more mispriced side first, if either clears the edge — and keep the
+  // book fresh either way so opportunities keep appearing round-long.
+  const buyEdge = bestAsk ? est.fair - bestAsk.price : -Infinity;  // >0 ⇒ ask is cheap
+  const sellEdge = bestBid ? bestBid.price - est.fair : -Infinity; // >0 ⇒ bid is rich
+
+  // Take a small lot at a time (not the whole resting order) so a bot trades
+  // granularly through the round instead of exhausting its round limit at once.
+  const lot = 1 + Math.floor(Math.random() * BOT_OO_TAKE_LOT);
+  if (buyEdge > edge && buyEdge >= sellEdge && withinLimit(room, bot, +1)) {
+    botExecuteTake(room, botId, bestAsk, 'ask', lot);
     return;
   }
-  if (bestBid && bestBid.price - est.fair > edge && withinLimit(room, bot, -1)) {
-    botExecuteTake(room, botId, bestBid, 'bid');
+  if (sellEdge > edge && withinLimit(room, bot, -1)) {
+    botExecuteTake(room, botId, bestBid, 'bid', lot);
     return;
   }
-  // No edge to take — provide liquidity with a fresh quote.
+  // Nothing looks mispriced — the bot thinks the market is fair, so it does NOT
+  // trade. It just refreshes its own two-sided quote to keep providing liquidity.
   botPostQuote(room, botId, est);
 }
 
-// Drive every bot through the open-outcry round on jittered, repeated actions.
+// Drive every bot through the open-outcry round, continuously, for as long as
+// the round is live. Each bot re-evaluates on a jittered delay and reschedules
+// itself — so it keeps hunting for trading opportunities the whole round rather
+// than firing a fixed handful of actions and going quiet.
 function scheduleOpenOutcryBots(roomId) {
   const room = rooms[roomId];
   if (!room || room.settings.marketMaking || isClosed(room)) return;
   const roundAtSchedule = room.game.round;
   for (const [id, p] of Object.entries(room.players)) {
     if (!isBot(p)) continue;
-    const attempt = (n) => {
-      if (n <= 0) return;
+    const tick = () => {
       setTimeout(() => {
         const r = rooms[roomId];
         if (!r || r.settings.marketMaking || isClosed(r)) return;
-        if (r.game.round !== roundAtSchedule) return;   // stale round
+        if (r.game.round !== roundAtSchedule) return;   // stale round — stop looping
         if (!r.players[id]) return;                     // bot removed
         botOpenOutcryAction(r, id);
         broadcast(roomId);
-        attempt(n - 1);
+        tick(); // keep going until the round changes or the game closes
       }, botDelay());
     };
-    attempt(BOT_OO_ACTIONS);
+    tick();
   }
 }
 
@@ -973,10 +1023,10 @@ io.on('connection', (socket) => {
     const { price, qty } = order;
     const cost = qty * price;
 
-    // Enforce the absolute position cap for both sides of the fill.
+    // Enforce the per-round position limit for both sides of the fill.
     const takerDelta = side === 'bid' ? -qty : +qty;
     if (!withinLimit(room, taker, takerDelta)) {
-      socket.emit('tradeError', `Position limit (±${positionLimit(room)}) reached.`);
+      socket.emit('tradeError', `Round position limit (±${positionLimit(room)}) reached — wait for next round.`);
       return;
     }
     if (!withinLimit(room, maker, -takerDelta)) return;
@@ -1011,6 +1061,8 @@ io.on('connection', (socket) => {
       ts: Date.now(),
     });
     recordTrade(room, taker.name, maker.name);
+    applyRoundNet(room, taker.name, takerDelta);
+    applyRoundNet(room, maker.name, -takerDelta);
     syncPlayerByName(room, socket.id);
     syncPlayerByName(room, order.socketId);
     broadcast(roomId);

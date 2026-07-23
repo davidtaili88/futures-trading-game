@@ -426,14 +426,23 @@ socket.on('state', ({ game, players, trades, lastPrice, mm, orderBook, roundEnds
   startCountdown(roundEndsAt);
   const me = players.find(p => p.id === myId);
   const amMaker = mm?.phase === 'trading' && myId === mm.makerId;
-  // The per-round trade/net limits only apply in market-making mode; open-outcry
-  // (non-MM) mode has no round trade limit, so don't show a limit counter there.
-  const myRoundTrades = (isMMMode && me && !amMaker) ? (roundTradeCount?.[me.name] ?? 0) : null;
-  if (myRoundTrades !== null) {
+  // Limit readout differs by mode:
+  //  • MM mode: per-round trade count + net-position limit (maker exempt).
+  //  • Open-outcry: per-round NET position limit (positionLimit), reset each round.
+  if (isMMMode) {
+    const myRoundTrades = (me && !amMaker) ? (roundTradeCount?.[me.name] ?? 0) : null;
+    if (myRoundTrades !== null) {
+      const net = roundNetPos?.[me.name] ?? 0;
+      const lim = roundNetLimit ?? 10;
+      $('pos-limit-display').textContent =
+        `${roundTradeLimit - myRoundTrades}/${roundTradeLimit} trades · net ${net > 0 ? '+' : ''}${net} (±${lim})`;
+    } else {
+      $('pos-limit-display').textContent = '—';
+    }
+  } else if (me) {
     const net = roundNetPos?.[me.name] ?? 0;
-    const lim = roundNetLimit ?? 10;
-    $('pos-limit-display').textContent =
-      `${roundTradeLimit - myRoundTrades}/${roundTradeLimit} trades · net ${net > 0 ? '+' : ''}${net} (±${lim})`;
+    const lim = game.positionLimit ?? 10;
+    $('pos-limit-display').textContent = `round net ${net > 0 ? '+' : ''}${net} (±${lim})`;
   } else {
     $('pos-limit-display').textContent = '—';
   }
