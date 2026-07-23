@@ -60,12 +60,12 @@
         </label>
       </div>
 
-      <div id="num-bots-row" class="hidden">
+      <div id="num-bots-row">
         <label class="field-label" for="num-bots">
           Bots: <b id="num-bots-val">0</b>
         </label>
         <input id="num-bots" type="range" min="0" max="8" value="0" />
-        <p class="hint-text">Computer traders that bid, make markets, and take — market-making mode only. Each bot estimates fair value by simulation and quotes wider when unsure; ~15% of bids are deliberately off, giving you flow to pick off.</p>
+        <p class="hint-text">Computer traders that play either mode. Each estimates fair value by simulation and quotes wider when unsure. In market-making mode they bid, make markets, and take (~15% of bids deliberately off); in open-outcry mode they post two-sided limit orders and pick off mispriced resting orders.</p>
       </div>
 
       <div id="lobby-section" class="hidden">

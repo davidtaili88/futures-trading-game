@@ -137,10 +137,8 @@ function syncPositionLimitLabel() {
   $('position-limit-val').textContent = `±${v}`;
 }
 
-// Bots are market-making-mode only — show the slider only when MM is on.
+// Bots play both trading modes — the slider is always shown.
 function syncBotsVisibility() {
-  const on = $('mm-mode').checked;
-  $('num-bots-row').classList.toggle('hidden', !on);
   $('num-bots-val').textContent = parseInt($('num-bots').value, 10);
 }
 
@@ -187,7 +185,7 @@ function applySettings() {
     numRounds: parseInt($('num-rounds').value, 10),
     privatePerPlayer: parseInt($('private-per-player').value, 10),
     marketMaking: $('mm-mode').checked,
-    numBots: $('mm-mode').checked ? parseInt($('num-bots').value, 10) : 0,
+    numBots: parseInt($('num-bots').value, 10),
     roundDuration: parseInt($('round-duration').value, 10),
     positionLimit: parseInt($('position-limit').value, 10),
   });

@@ -90,6 +90,15 @@ function withinRoundNetLimit(room, playerName, signedDelta) {
   return Math.abs(roundNet(room, playerName) + signedDelta) <= ROUND_NET_LIMIT;
 }
 
+// Open-outcry (non-MM) absolute position cap. Would applying a signed delta
+// (+qty buy, −qty sell) keep |position| within the room's positionLimit?
+function positionLimit(room) {
+  return room.settings.positionLimit ?? 10;
+}
+function withinLimit(room, player, signedDelta) {
+  return Math.abs((player.position ?? 0) + signedDelta) <= positionLimit(room);
+}
+
 // ---------- Bots (market-making mode only) ----------
 // A bot is a player entry with a synthetic id (`bot:N`), no socket, always
 // connected. It estimates fair value by Monte Carlo (see estimateFair) using
@@ -102,6 +111,11 @@ const BOT_TAKE_EDGE_K = 0.5;     // take only if |fair - quote| > K * stdev
 const BOT_MIN_MARGIN = 0.1;      // floor: confident bots can quote as tight as 0.1
 const BOT_ACT_MIN_MS = 500;      // action jitter lower bound
 const BOT_ACT_MAX_MS = 3000;     // action jitter upper bound
+// Open-outcry (non-MM) bot tuning.
+const BOT_OO_SPREAD_K = 0.8;     // resting quote half-spread ≈ K * stdev around fair
+const BOT_OO_MIN_HALF = 0.5;     // minimum half-spread so quotes aren't degenerate
+const BOT_OO_MAX_LOT = 5;        // max lot a bot posts/takes at once
+const BOT_OO_ACTIONS = 6;        // action attempts per bot per round
 
 function isBot(player) {
   return !!(player && player.isBot);
@@ -243,6 +257,7 @@ function advanceRound(roomId) {
     openBidPhase(roomId);
   } else {
     startRoundTimer(roomId);
+    scheduleOpenOutcryBots(roomId);
   }
 }
 
@@ -350,11 +365,13 @@ function startGame(roomId, rawSettings) {
   room.playersByName = {};
   clearRoundTimer(room);
 
-  // Remove bots from any prior game, then spawn fresh bots (MM mode only).
+  // Remove bots from any prior game, then spawn fresh bots. Bots play both
+  // market-making mode (bid/quote/take) and open-outcry mode (post & take
+  // limit orders); the count comes from the same numBots setting.
   for (const [id, p] of Object.entries(room.players)) {
     if (isBot(p)) delete room.players[id];
   }
-  const numBots = room.settings.marketMaking ? (room.settings.numBots || 0) : 0;
+  const numBots = room.settings.numBots || 0;
   for (let i = 1; i <= numBots; i++) {
     const id = `bot:${i}`;
     room.players[id] = {
@@ -402,6 +419,7 @@ function startGame(roomId, rawSettings) {
     openBidPhase(roomId);
   } else {
     startRoundTimer(roomId);
+    scheduleOpenOutcryBots(roomId);
   }
 }
 
@@ -664,6 +682,133 @@ function scheduleBotTakes(roomId) {
   }
 }
 
+// ---------- Open-outcry (non-MM) bots ----------
+// Execute a bot taking a specific resting order. Mirrors the human takeOrder
+// handler: same cash/position bookkeeping, position cap, and trade record
+// (with taker/maker framing). `side` is the book the order rests on ('bid'|'ask').
+function botExecuteTake(room, botId, order, side) {
+  const taker = room.players[botId];
+  const maker = room.players[order.socketId];
+  if (!taker || !maker || order.socketId === botId) return false;
+  const { price, qty } = order;
+  const takerDelta = side === 'bid' ? -qty : +qty;
+  if (!withinLimit(room, taker, takerDelta)) return false;
+  if (!withinLimit(room, maker, -takerDelta)) return false;
+  const cost = qty * price;
+  if (side === 'bid') {
+    taker.cash += cost; taker.position -= qty;
+    maker.cash -= cost; maker.position += qty;
+  } else {
+    taker.cash -= cost; taker.position += qty;
+    maker.cash += cost; maker.position -= qty;
+  }
+  room.orderBook[side === 'bid' ? 'bids' : 'asks'] =
+    room.orderBook[side === 'bid' ? 'bids' : 'asks'].filter(o => o.id !== order.id);
+  room.trades.push({
+    round: room.game.round,
+    buyer: side === 'ask' ? taker.name : maker.name,
+    seller: side === 'bid' ? taker.name : maker.name,
+    taker: taker.name,
+    maker: maker.name,
+    takerSide: side === 'bid' ? 'sold' : 'bought',
+    qty,
+    price: Math.round(price * 100) / 100,
+    ts: Date.now(),
+  });
+  recordTrade(room, taker.name, maker.name);
+  syncPlayerByName(room, botId);
+  syncPlayerByName(room, order.socketId);
+  return true;
+}
+
+// A bot posts (or refreshes) a resting bid+ask around its fair estimate. It
+// cancels its own prior resting orders first so it always shows one two-sided
+// quote. Spread is confidence-scaled (wider when uncertain), and each side is
+// sized down toward the position cap so the bot can always honor a fill.
+function botPostQuote(room, botId, est) {
+  const bot = room.players[botId];
+  if (!bot) return false;
+  // Clear this bot's existing resting orders (fresh two-sided quote each time).
+  room.orderBook.bids = room.orderBook.bids.filter(o => o.socketId !== botId);
+  room.orderBook.asks = room.orderBook.asks.filter(o => o.socketId !== botId);
+
+  const half = Math.max(BOT_OO_MIN_HALF, BOT_OO_SPREAD_K * est.stdev);
+  const bidPrice = round1(est.fair - half);
+  const askPrice = round1(est.fair + half);
+  if (!(askPrice > bidPrice)) return false;
+
+  const cap = positionLimit(room);
+  // Room to buy before hitting +cap, room to sell before hitting −cap.
+  const buyHeadroom = Math.max(0, cap - bot.position);
+  const sellHeadroom = Math.max(0, cap + bot.position);
+  const bidQty = Math.min(BOT_OO_MAX_LOT, buyHeadroom);
+  const askQty = Math.min(BOT_OO_MAX_LOT, sellHeadroom);
+
+  let posted = false;
+  const mkId = () => `${botId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  if (bidQty > 0) {
+    room.orderBook.bids.push({ id: mkId(), socketId: botId, price: bidPrice, qty: bidQty, name: bot.name });
+    posted = true;
+  }
+  if (askQty > 0) {
+    room.orderBook.asks.push({ id: mkId(), socketId: botId, price: askPrice, qty: askQty, name: bot.name });
+    posted = true;
+  }
+  if (posted) tryMatchOrders(room);
+  return posted;
+}
+
+// One bot action in open-outcry mode: first pick off any clearly-mispriced
+// resting order (edge scaled by the bot's own uncertainty, like MM takes),
+// otherwise refresh its own two-sided quote to provide liquidity.
+function botOpenOutcryAction(room, botId) {
+  const bot = room.players[botId];
+  if (!bot) return;
+  const est = botEstimate(room, bot);
+  const edge = BOT_TAKE_EDGE_K * est.stdev;
+
+  // Best resting ask below fair → lift it (buy). Best resting bid above fair → hit it (sell).
+  const others = (list) => list.filter(o => o.socketId !== botId);
+  const asks = others(room.orderBook.asks);
+  const bids = others(room.orderBook.bids);
+  const bestAsk = asks.length ? asks.reduce((a, b) => b.price < a.price ? b : a) : null;
+  const bestBid = bids.length ? bids.reduce((a, b) => b.price > a.price ? b : a) : null;
+
+  if (bestAsk && est.fair - bestAsk.price > edge && withinLimit(room, bot, +1)) {
+    botExecuteTake(room, botId, bestAsk, 'ask');
+    return;
+  }
+  if (bestBid && bestBid.price - est.fair > edge && withinLimit(room, bot, -1)) {
+    botExecuteTake(room, botId, bestBid, 'bid');
+    return;
+  }
+  // No edge to take — provide liquidity with a fresh quote.
+  botPostQuote(room, botId, est);
+}
+
+// Drive every bot through the open-outcry round on jittered, repeated actions.
+function scheduleOpenOutcryBots(roomId) {
+  const room = rooms[roomId];
+  if (!room || room.settings.marketMaking || isClosed(room)) return;
+  const roundAtSchedule = room.game.round;
+  for (const [id, p] of Object.entries(room.players)) {
+    if (!isBot(p)) continue;
+    const attempt = (n) => {
+      if (n <= 0) return;
+      setTimeout(() => {
+        const r = rooms[roomId];
+        if (!r || r.settings.marketMaking || isClosed(r)) return;
+        if (r.game.round !== roundAtSchedule) return;   // stale round
+        if (!r.players[id]) return;                     // bot removed
+        botOpenOutcryAction(r, id);
+        broadcast(roomId);
+        attempt(n - 1);
+      }, botDelay());
+    };
+    attempt(BOT_OO_ACTIONS);
+  }
+}
+
 io.on('connection', (socket) => {
   let roomId = null;
 
@@ -827,6 +972,14 @@ io.on('connection', (socket) => {
 
     const { price, qty } = order;
     const cost = qty * price;
+
+    // Enforce the absolute position cap for both sides of the fill.
+    const takerDelta = side === 'bid' ? -qty : +qty;
+    if (!withinLimit(room, taker, takerDelta)) {
+      socket.emit('tradeError', `Position limit (±${positionLimit(room)}) reached.`);
+      return;
+    }
+    if (!withinLimit(room, maker, -takerDelta)) return;
 
     if (side === 'bid') {
       taker.cash += cost;

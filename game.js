@@ -241,7 +241,7 @@ export function normalizeSettings(s = {}) {
   let privatePerPlayer = parseInt(s.privatePerPlayer, 10);
   if (!Number.isFinite(privatePerPlayer)) privatePerPlayer = 0;
   privatePerPlayer = Math.max(0, Math.min(3, privatePerPlayer));
-  // numBots: computer players added in market-making mode. 0 disables bots.
+  // numBots: computer players added to the game (both trading modes). 0 disables bots.
   let numBots = parseInt(s.numBots, 10);
   if (!Number.isFinite(numBots)) numBots = 0;
   numBots = Math.max(0, Math.min(8, numBots));
