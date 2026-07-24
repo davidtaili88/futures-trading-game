@@ -71,9 +71,6 @@ function isHost(room, socketId) {
 }
 
 const ROUND_TRADE_LIMIT = 3;
-// Max cumulative NET position change a non-maker may take across their trades
-// in a single round (|buys - sells| this round ≤ this).
-const ROUND_NET_LIMIT = 10;
 
 function withinRoundTradeLimit(room, playerName) {
   return (room.roundTradeCount[playerName] ?? 0) < ROUND_TRADE_LIMIT;
@@ -84,10 +81,12 @@ function roundNet(room, playerName) {
   return room.roundNetPos[playerName] ?? 0;
 }
 
-// Would a signed delta (qty for buy, −qty for sell) keep the player's round-net
-// change within ±ROUND_NET_LIMIT?
+// Max cumulative NET position change a non-maker may take across their trades in
+// a single round (|buys − sells| this round ≤ this). This is the configurable
+// positionLimit setting — so setting it to 1 restricts each non-maker to a net
+// of ±1 per round in market-making mode.
 function withinRoundNetLimit(room, playerName, signedDelta) {
-  return Math.abs(roundNet(room, playerName) + signedDelta) <= ROUND_NET_LIMIT;
+  return Math.abs(roundNet(room, playerName) + signedDelta) <= positionLimit(room);
 }
 
 // Open-outcry (non-MM) position limit. This caps the player's NET position
@@ -222,11 +221,12 @@ function botTakeDecision(room, botPlayer, est, requireMinimum = false) {
   }
   if (!side) return null;
 
-  // Size: small lot, clamped so |net ± qty| stays within ROUND_NET_LIMIT.
+  // Size: small lot, clamped so |net ± qty| stays within the round net limit.
   const net = roundNet(room, botPlayer.name);
   const dir = side === 'buy' ? 1 : -1;
-  // Largest q with |net + dir*q| ≤ LIMIT: buy caps at LIMIT - net, sell at LIMIT + net.
-  const headroom = dir > 0 ? ROUND_NET_LIMIT - net : ROUND_NET_LIMIT + net;
+  const cap = positionLimit(room);
+  // Largest q with |net + dir*q| ≤ cap: buy caps at cap - net, sell at cap + net.
+  const headroom = dir > 0 ? cap - net : cap + net;
   const qty = Math.max(0, Math.min(maxQty, headroom));
   if (qty <= 0) return null;
   return { side, qty };
@@ -360,7 +360,7 @@ function broadcast(roomId) {
     roundTradeCount: room.roundTradeCount,
     roundTradeLimit: ROUND_TRADE_LIMIT,
     roundNetPos: room.roundNetPos,
-    roundNetLimit: ROUND_NET_LIMIT,
+    roundNetLimit: positionLimit(room),
   });
 }
 
@@ -975,7 +975,7 @@ io.on('connection', (socket) => {
     const signedDelta = side === 'buy' ? qty : -qty;
     if (!withinRoundNetLimit(room, p.name, signedDelta)) {
       const net = roundNet(room, p.name);
-      socket.emit('tradeError', `Round net position limit (±${ROUND_NET_LIMIT}) reached — your net this round is ${net > 0 ? '+' : ''}${net}.`);
+      socket.emit('tradeError', `Round net position limit (±${positionLimit(room)}) reached — your net this round is ${net > 0 ? '+' : ''}${net}.`);
       return;
     }
     executeMakerTrade(room, socket.id, side, qty);
