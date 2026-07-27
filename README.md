@@ -10,8 +10,11 @@ at the true value. Highest PnL wins.
 - **Real-time multiplayer** via Socket.IO — share a URL with others to play in the same room.
 - **Per-room isolation** — each URL hash (`/#room-name`) is a separate independent game.
 - **Configurable game settings** at the start of every game:
-  - **Asset class** — Cards (A=1…K=13), Dice (d6), or Numbers (1–20).
+  - **Asset class** — Cards (A=1…K=13), Dice (d6), Numbers (1–20), or Trials (Bernoulli outcomes).
   - **Contract type** — Sum, Product, Odds minus Evens, High-Low Spread, Max plus Min, Median, Second Highest, Sum of Squares, Max times Min, Count ≥ K, High − Low − Mean, Top-two minus Bottom-two, or Random.
+  - **Trials (Bernoulli) contracts** — pick the Trials asset class to trade a sequence of independent success/fail trials with an adjustable success probability. One result is revealed per round (round duration = time between results).
+    - **Successes** (default) — settles to the concrete number of successful trials.
+    - **Series mode** — a race: pays **$1.00** if successes reach an adjustable target before the trials run out, else **$0.00**, and settles **early** the moment the outcome is clinched. E.g. Leo vs William, best-of-seven first-to-four, Leo winning 60% of matches with a result every 15s: 7 trials, p=0.6, target 4, round duration 15.
   - **Number of assets** and **number of rounds**.
 - **Per-player hints** — each player gets one randomly assigned hint (Min, Max, Mean, or Asset Range), hidden by default.
 - **Market Making Mode** — before each round, players bid a spread margin. The tightest quote wins and becomes the market maker, setting their own bid/ask prices. All other players trade at those prices.

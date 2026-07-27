@@ -3,7 +3,7 @@ import http from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { newGame, revealedForRound, normalizeSettings, defaultSettings, assetClassInfo, contractInfo, drawPrivateAssets, computeSettlement, stripHintForClient, rollHintByTier, estimateFair } from './game.js';
+import { newGame, revealedForRound, normalizeSettings, defaultSettings, assetClassInfo, contractInfo, drawPrivateAssets, computeSettlement, stripHintForClient, rollHintByTier, estimateFair, seriesDecidedRound } from './game.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -186,6 +186,19 @@ function round1(x) {
   return Math.round(x * 10) / 10;
 }
 
+// Price granularity and minimum quote half-spread that suit the contract's SCALE.
+// A $1/$0 series pays in [0,1] and needs cent-level ticks with a tight spread; the
+// integer-valued contracts (Sum, Count, …) want 0.1 ticks and a wider floor. Using
+// the same 0.5 half-spread for a $1 contract would make quotes span the whole range.
+function priceScale(room) {
+  const id = room.game.contract.id;
+  if (id === 'bernoulli_series') {
+    // $1/$0 contract: cent ticks, tight spread, small take-edge floor.
+    return { round: (x) => Math.round(x * 100) / 100, minHalf: 0.02, minEdge: 0.02 };
+  }
+  return { round: round1, minHalf: BOT_OO_MIN_HALF, minEdge: BOT_OO_EDGE_MIN };
+}
+
 // Bot's bid/ask when it wins the maker role: centered on its fair estimate,
 // with spread exactly equal to the winning margin (server requires spread==margin
 // after 2-decimal rounding). Both sides rounded to 0.1 so fractional margins hold.
@@ -279,6 +292,10 @@ function advanceRound(roomId) {
 }
 
 function isClosed(room) {
+  // Series (best-of) contracts settle EARLY: once enough trials are revealed to
+  // clinch the outcome, the game is over even if trials remain unplayed.
+  const decided = seriesDecidedRound(room.game);
+  if (decided != null && revealedForRound(room.game) >= decided) return true;
   return room.game.round >= room.game.contract.numRounds;
 }
 
@@ -766,9 +783,10 @@ function botPostQuote(room, botId, est) {
   room.orderBook.bids = room.orderBook.bids.filter(o => o.socketId !== botId);
   room.orderBook.asks = room.orderBook.asks.filter(o => o.socketId !== botId);
 
-  const half = Math.max(BOT_OO_MIN_HALF, BOT_OO_SPREAD_K * est.stdev);
-  const bidPrice = round1(est.fair - half);
-  const askPrice = round1(est.fair + half);
+  const { round: roundPx, minHalf } = priceScale(room);
+  const half = Math.max(minHalf, BOT_OO_SPREAD_K * est.stdev);
+  const bidPrice = roundPx(est.fair - half);
+  const askPrice = roundPx(est.fair + half);
   if (!(askPrice > bidPrice)) return false;
 
   const cap = positionLimit(room);
@@ -803,8 +821,9 @@ function botOpenOutcryAction(room, botId) {
   const est = botEstimate(room, bot);
   // How far a resting price must stray from fair before the bot calls it an
   // opportunity. Scales with the bot's uncertainty, with an absolute floor so a
-  // very confident bot still trades on small-but-real mispricings.
-  const edge = Math.max(BOT_OO_EDGE_MIN, BOT_OO_EDGE_K * est.stdev);
+  // very confident bot still trades on small-but-real mispricings. The floor is
+  // scale-aware (tiny for the $1/$0 series, wider for integer contracts).
+  const edge = Math.max(priceScale(room).minEdge, BOT_OO_EDGE_K * est.stdev);
 
   // Best resting ask below fair → lift it (buy). Best resting bid above fair → hit it (sell).
   const others = (list) => list.filter(o => o.socketId !== botId);

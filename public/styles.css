@@ -161,8 +161,15 @@ main {
   color: var(--accent); border: 1px solid var(--accent);
   font-size: 26px;
 }
+.asset.trial { border: 1px solid var(--border); font-size: 22px; }
+.asset.trial.success { background: linear-gradient(135deg, #1d2b1d, #14211a); color: var(--green); border-color: var(--green); }
+.asset.trial.fail { background: linear-gradient(135deg, #2b1d1d, #211414); color: var(--red); border-color: var(--red); }
+.asset.trial .av { font-size: 26px; }
 .asset .av { font-size: 20px; }
 .asset .as { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.trial-tally { flex-basis: 100%; margin-top: 8px; font-size: 13px; color: var(--muted); }
+.trial-tally .t-succ { color: var(--green); font-weight: 700; }
+.trial-tally .t-fail { color: var(--red); font-weight: 700; }
 @keyframes flip { from { transform: rotateY(90deg); opacity: 0; } to { transform: rotateY(0); opacity: 1; } }
 
 .settlement-box {

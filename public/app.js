@@ -63,10 +63,14 @@ socket.on('config', ({ assetClasses: classes, contracts: ctrs, current, gameInPr
   $('num-assets').value = current.numAssets;
   $('num-rounds').value = current.numRounds;
   $('private-per-player').value = current.privatePerPlayer ?? 0;
+  $('trial-prob').value = Math.round((current.trialProb ?? 0.6) * 100);
+  $('series-mode').checked = !!current.seriesMode;
+  $('success-target').value = current.successTarget ?? 4;
   syncSettingsLabels();
   syncBotsVisibility();
   syncRoundDurationLabel();
   syncPositionLimitLabel();
+  syncTrialsVisibility();
   $('start-btn').textContent = gameInProgress ? 'Join Game' : 'Start Game';
 });
 
@@ -85,6 +89,7 @@ function renderAssetClassButtons() {
       if (parseInt(slider.value, 10) > c.maxAssets) slider.value = c.maxAssets;
       renderAssetClassButtons();
       syncSettingsLabels();
+      syncTrialsVisibility();
     });
     group.appendChild(b);
   }
@@ -142,13 +147,41 @@ function syncBotsVisibility() {
   $('num-bots-val').textContent = parseInt($('num-bots').value, 10);
 }
 
-$('num-assets').addEventListener('input', syncSettingsLabels);
+// Show the Bernoulli-trials controls (and hide the contract picker, private
+// cards, and number-of-rounds, which don't apply) when Trials is selected.
+function syncTrialsVisibility() {
+  const isTrials = chosenClass === 'trials';
+  $('trials-settings').classList.toggle('hidden', !isTrials);
+  $('contract-row').classList.toggle('hidden', isTrials);
+  $('private-row').classList.toggle('hidden', isTrials);
+  $('num-rounds-row').classList.toggle('hidden', isTrials);
+  if (isTrials) syncTrialsLabels();
+}
+
+function syncTrialsLabels() {
+  const p = parseInt($('trial-prob').value, 10);
+  $('trial-prob-val').textContent = `${p}%`;
+  const series = $('series-mode').checked;
+  // Target only matters in series mode; grey it out otherwise.
+  $('success-target-row').classList.toggle('hidden', !series);
+  // Target can't exceed the number of trials.
+  const trials = parseInt($('num-assets').value, 10);
+  const tSlider = $('success-target');
+  tSlider.max = trials;
+  if (parseInt(tSlider.value, 10) > trials) tSlider.value = trials;
+  $('success-target-val').textContent = parseInt(tSlider.value, 10);
+}
+
+$('num-assets').addEventListener('input', () => { syncSettingsLabels(); syncTrialsLabels(); });
 $('num-rounds').addEventListener('input', syncSettingsLabels);
 $('private-per-player').addEventListener('input', syncSettingsLabels);
 $('round-duration').addEventListener('input', syncRoundDurationLabel);
 $('position-limit').addEventListener('input', syncPositionLimitLabel);
 $('num-bots').addEventListener('input', syncBotsVisibility);
 $('mm-mode').addEventListener('change', syncBotsVisibility);
+$('trial-prob').addEventListener('input', syncTrialsLabels);
+$('series-mode').addEventListener('change', syncTrialsLabels);
+$('success-target').addEventListener('input', syncTrialsLabels);
 $('start-btn').addEventListener('click', startGame);
 $('name-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') startGame(); });
 
@@ -188,6 +221,9 @@ function applySettings() {
     numBots: parseInt($('num-bots').value, 10),
     roundDuration: parseInt($('round-duration').value, 10),
     positionLimit: parseInt($('position-limit').value, 10),
+    trialProb: parseInt($('trial-prob').value, 10) / 100,
+    seriesMode: $('series-mode').checked,
+    successTarget: parseInt($('success-target').value, 10),
   });
   $('settings-overlay').classList.add('hidden');
 }
@@ -579,16 +615,30 @@ function renderContract(game) {
 
   const wrap = $('assets');
   wrap.innerHTML = '';
+  let succ = 0;
   for (const a of game.revealedAssets) {
     const div = document.createElement('div');
-    if (a.kind === 'die') div.className = 'asset die';
-    else if (a.kind === 'number') div.className = 'asset number';
-    else div.className = 'asset' + (a.red ? ' red' : '');
-    div.innerHTML = `<div class="av">${a.label}</div><div class="as">value ${a.value}</div>`;
+    if (a.kind === 'trial') {
+      if (a.value === 1) succ++;
+      div.className = 'asset trial' + (a.value === 1 ? ' success' : ' fail');
+      div.innerHTML = `<div class="av">${a.value === 1 ? '✔' : '✕'}</div><div class="as">${a.value === 1 ? 'success' : 'fail'}</div>`;
+    } else {
+      if (a.kind === 'die') div.className = 'asset die';
+      else if (a.kind === 'number') div.className = 'asset number';
+      else div.className = 'asset' + (a.red ? ' red' : '');
+      div.innerHTML = `<div class="av">${a.label}</div><div class="as">value ${a.value}</div>`;
+    }
     wrap.appendChild(div);
   }
   if (game.revealedCount === 0) {
-    wrap.innerHTML = '<div class="muted" style="align-self:center;">No assets revealed yet — click "Next Round".</div>';
+    wrap.innerHTML = '<div class="muted" style="align-self:center;">No trials yet — the first result is coming.</div>';
+  } else if (game.contract.assetClass === 'trials') {
+    // Running tally under the trial row — successes vs fails so far.
+    const fails = game.revealedCount - succ;
+    const tally = document.createElement('div');
+    tally.className = 'trial-tally';
+    tally.innerHTML = `<span class="t-succ">${succ} success</span> · <span class="t-fail">${fails} fail</span> of ${game.totalAssets} trials`;
+    wrap.appendChild(tally);
   }
 
   const box = $('settlement-box');

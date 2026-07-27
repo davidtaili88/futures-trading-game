@@ -81,7 +81,34 @@ const ASSET_CLASSES = {
     valueMax: NUMBER_MAX,
     maxAssets: 10,
   },
+
+  // Bernoulli trials: each "asset" is one independent trial with success
+  // probability p (from settings.trialProb; default 0.5). Value is 1 (success)
+  // or 0 (failure). `draw`/`sampleValue` accept { p } so the same class serves
+  // any configured probability. Used for the Successes and Series contracts.
+  trials: {
+    label: 'Trials',
+    unit: 'trial',
+    draw(n, { p = 0.5 } = {}) {
+      return Array.from({ length: n }, () => {
+        const success = Math.random() < p;
+        return { kind: 'trial', label: success ? 'Success' : 'Fail', value: success ? 1 : 0, success };
+      });
+    },
+    sampleValue({ p = 0.5 } = {}) {
+      return Math.random() < p ? 1 : 0;
+    },
+    valueMin: 0,
+    valueMax: 1,
+    maxAssets: 20,
+  },
 };
+
+// Options passed to an asset class's draw/sampleValue for this game (currently
+// just the Bernoulli success probability). Safe for classes that ignore them.
+function classOpts(settings) {
+  return { p: settings?.trialProb ?? 0.5 };
+}
 
 // ---------- Contract definitions ----------
 // Contracts are now asset-class agnostic: each is a settlement function over
@@ -198,6 +225,28 @@ const CONTRACTS = [
     description: 'Sum of the two HIGHEST values minus the sum of the two LOWEST. Can settle negative.',
     settle: (vals) => topTwoMinusBottomTwo(vals),
   },
+  // ----- Bernoulli-trials contracts (assetClass 'trials' only) -----
+  {
+    id: 'bernoulli_count',
+    name: 'Successes',
+    description: 'Settles to the NUMBER of successful trials.',
+    // vals are 0/1 outcomes; the count of successes is just their sum.
+    settle: (vals) => vals.reduce((a, b) => a + b, 0),
+  },
+  {
+    id: 'bernoulli_series',
+    name: 'Series',
+    description: 'Pays $1 if successes reach the target before the trials run out, otherwise $0.',
+    // A race: $1 if cumulative successes ever reach the target, else $0. Because
+    // trials are iid, whether the target is reached depends only on the total
+    // count of successes — reaching it early only ends the series sooner, it does
+    // not change the outcome. So: total successes ≥ target ⇒ $1.
+    settle: (vals, params = {}) => {
+      const target = params.target ?? Math.ceil((vals.length + 1) / 2);
+      const successes = vals.reduce((a, b) => a + b, 0);
+      return successes >= target ? 1 : 0;
+    },
+  },
 ];
 
 // Per-game contract parameters, rolled once in newGame and stored on the game's
@@ -225,10 +274,16 @@ function rollContractParams(contract, cls) {
 // concrete K for the count contract, so players see "Count ≥ 4").
 function contractDisplayName(contract, params = {}) {
   if (contract.id === 'count_above_k' && params.k != null) return `Count ≥ ${params.k}`;
+  if (contract.id === 'bernoulli_series' && params.target != null) return `Series (first to ${params.target})`;
   return contract.name;
 }
 
 function makeHintCards(contract, assets) {
+  // Bernoulli-trials contracts are fully public: everyone watches the same
+  // sequence of trials with a known success probability, so there is no private
+  // signal to hand out. No hints.
+  if (contract.id === 'bernoulli_count' || contract.id === 'bernoulli_series') return [];
+
   const vals = assets.map((a) => a.value);
   const n = vals.length;
   const mn = Math.min(...vals);
@@ -355,21 +410,50 @@ export function normalizeSettings(s = {}) {
   let numRounds = parseInt(s.numRounds, 10);
   if (!Number.isFinite(numRounds)) numRounds = numAssets;
   numRounds = Math.max(1, Math.min(20, numRounds));
+  // Trials reveal exactly one outcome per round, so the number of rounds is the
+  // number of trials (the series may still end earlier — see seriesDecidedRound).
+  if (classKey === 'trials') numRounds = numAssets;
   // privatePerPlayer: hole cards each player privately holds; they count toward
   // settlement but are never revealed publicly. 0 disables the private-card model.
   let privatePerPlayer = parseInt(s.privatePerPlayer, 10);
   if (!Number.isFinite(privatePerPlayer)) privatePerPlayer = 0;
   privatePerPlayer = Math.max(0, Math.min(3, privatePerPlayer));
+  // Trials are a single shared sequence (a series everyone watches) — there are
+  // no per-player private trials, so force private cards off for that class.
+  if (classKey === 'trials') privatePerPlayer = 0;
   // numBots: computer players added to the game (both trading modes). 0 disables bots.
   let numBots = parseInt(s.numBots, 10);
   if (!Number.isFinite(numBots)) numBots = 0;
   numBots = Math.max(0, Math.min(8, numBots));
   const contractId = CONTRACTS.find((c) => c.id === s.contractId) ? s.contractId : null;
-  return { assetClass: classKey, numAssets, numRounds, privatePerPlayer, numBots, contractId };
+
+  // Bernoulli-trials parameters (only meaningful for the 'trials' asset class):
+  //   trialProb    : per-trial success probability p ∈ [0.01, 0.99]
+  //   seriesMode   : if true, the contract is a race — settles $1 when successes
+  //                  reach successTarget, $0 if trials run out first. If false,
+  //                  the contract settles to the concrete number of successes.
+  //   successTarget: wins needed to clinch the series (only used in seriesMode).
+  let trialProb = parseFloat(s.trialProb);
+  if (!Number.isFinite(trialProb)) trialProb = 0.5;
+  trialProb = Math.max(0.01, Math.min(0.99, Math.round(trialProb * 100) / 100));
+  const seriesMode = !!s.seriesMode;
+  let successTarget = parseInt(s.successTarget, 10);
+  if (!Number.isFinite(successTarget)) successTarget = Math.ceil((numAssets + 1) / 2);
+  // Target must be reachable (≤ trials) and positive.
+  successTarget = Math.max(1, Math.min(numAssets, successTarget));
+
+  return {
+    assetClass: classKey, numAssets, numRounds, privatePerPlayer, numBots, contractId,
+    trialProb, seriesMode, successTarget,
+  };
 }
 
 export function defaultSettings() {
-  return { assetClass: 'cards', numAssets: 5, numRounds: 5, privatePerPlayer: 0, numBots: 0, contractId: null, roundDuration: 60, positionLimit: 10 };
+  return {
+    assetClass: 'cards', numAssets: 5, numRounds: 5, privatePerPlayer: 0, numBots: 0,
+    contractId: null, roundDuration: 60, positionLimit: 10,
+    trialProb: 0.6, seriesMode: false, successTarget: 4,
+  };
 }
 
 // Draw `count` private (hole) assets for a single player from the game's asset
@@ -378,7 +462,7 @@ export function defaultSettings() {
 // acceptable for a training game).
 export function drawPrivateAssets(game, count) {
   const cls = ASSET_CLASSES[game.contract.assetClass];
-  return cls.draw(count);
+  return cls.draw(count, classOpts(game.settings));
 }
 
 // Recompute settlement over the community pool plus every player's private
@@ -417,6 +501,7 @@ export function estimateFair(game, {
   const others = Math.max(0, otherPrivateCount);
   const useHint = hint && hintIsEvaluable(hint);
   const maxAttemptsPerSim = 200;
+  const opts = classOpts(game.settings);
 
   let sum = 0;
   let sumSq = 0;
@@ -427,16 +512,16 @@ export function estimateFair(game, {
     if (useHint) {
       let ok = false;
       for (let a = 0; a < maxAttemptsPerSim; a++) {
-        hiddenVals = Array.from({ length: hidden }, () => cls.sampleValue());
+        hiddenVals = Array.from({ length: hidden }, () => cls.sampleValue(opts));
         if (hintMatches(hint, revealedValues.concat(hiddenVals))) { ok = true; break; }
       }
-      if (!ok) hiddenVals = Array.from({ length: hidden }, () => cls.sampleValue()); // fallback
+      if (!ok) hiddenVals = Array.from({ length: hidden }, () => cls.sampleValue(opts)); // fallback
     } else {
-      hiddenVals = Array.from({ length: hidden }, () => cls.sampleValue());
+      hiddenVals = Array.from({ length: hidden }, () => cls.sampleValue(opts));
     }
 
     const vals = revealedValues.concat(hiddenVals, ownPrivateValues);
-    for (let u = 0; u < others; u++) vals.push(cls.sampleValue()); // other players' privates
+    for (let u = 0; u < others; u++) vals.push(cls.sampleValue(opts)); // other players' privates
     const s = contract.settle(vals, game.contract.params ?? {});
     sum += s;
     sumSq += s * s;
@@ -476,9 +561,14 @@ function hintMatches(hint, communityValues) {
   return evalFn(communityValues, hint) === hint.value;
 }
 
-// Expose contract metadata for the settings UI.
+// Expose contract metadata for the settings UI. The Bernoulli contracts are
+// excluded: they only apply to the 'trials' asset class and are auto-selected by
+// the seriesMode toggle, not chosen from the general contract picker.
+const TRIALS_CONTRACT_IDS = ['bernoulli_count', 'bernoulli_series'];
 export function contractInfo() {
-  return CONTRACTS.map(({ id, name, description }) => ({ id, name, description }));
+  return CONTRACTS
+    .filter((c) => !TRIALS_CONTRACT_IDS.includes(c.id))
+    .map(({ id, name, description }) => ({ id, name, description }));
 }
 
 // Expose class metadata for the settings UI.
@@ -491,12 +581,25 @@ export function assetClassInfo() {
 export function newGame(rawSettings) {
   const settings = normalizeSettings(rawSettings);
   const cls = ASSET_CLASSES[settings.assetClass];
-  const contract = settings.contractId
-    ? CONTRACTS.find((c) => c.id === settings.contractId)
-    : CONTRACTS[Math.floor(Math.random() * CONTRACTS.length)];
-  const assets = cls.draw(settings.numAssets);
-  // Roll any per-game contract parameters (currently just K for count_above_k).
-  const params = rollContractParams(contract, cls);
+  const opts = classOpts(settings);
+
+  // The 'trials' class pins its contract by the seriesMode toggle (not random):
+  // Series (race to a target, pays $1/$0) or Successes (concrete count).
+  let contract;
+  if (settings.assetClass === 'trials') {
+    contract = CONTRACTS.find((c) => c.id === (settings.seriesMode ? 'bernoulli_series' : 'bernoulli_count'));
+  } else {
+    contract = settings.contractId
+      ? CONTRACTS.find((c) => c.id === settings.contractId)
+      : CONTRACTS[Math.floor(Math.random() * CONTRACTS.length)];
+  }
+
+  const assets = cls.draw(settings.numAssets, opts);
+  // Per-game contract parameters. For trials, carry the success target (and p)
+  // so settle/estimate can decide the series; otherwise roll the usual params.
+  const params = settings.assetClass === 'trials'
+    ? { target: settings.successTarget, p: settings.trialProb }
+    : rollContractParams(contract, cls);
   const settlement = contract.settle(assets.map((a) => a.value), params);
   const hintCards = makeHintCards(contract, assets);
   return {
@@ -522,4 +625,23 @@ export function newGame(rawSettings) {
 // Round N reveals N assets (round 1 reveals 1, round 2 reveals 2, etc.)
 export function revealedForRound(game) {
   return Math.min(Math.max(0, game.round), game.assets.length);
+}
+
+// For a Series (best-of) contract, the round at which the outcome is CLINCHED —
+// i.e. the number of trials that must be revealed before the result is certain,
+// because either the target is reached (success side wins) or it can no longer
+// be reached (the other side wins). Returns null when this isn't a series game.
+// Used by the server to settle early instead of playing out dead trials.
+export function seriesDecidedRound(game) {
+  if (game.contract.id !== 'bernoulli_series') return null;
+  const target = game.contract.params?.target ?? Math.ceil((game.assets.length + 1) / 2);
+  const total = game.assets.length;
+  let succ = 0, fail = 0;
+  for (let i = 0; i < total; i++) {
+    if (game.assets[i].value === 1) succ++; else fail++;
+    // Clinched once the success side hits the target, or the failure side has so
+    // many that the target is unreachable in the remaining trials.
+    if (succ >= target || fail > total - target) return i + 1;
+  }
+  return total; // never decided early (shouldn't happen, but fall back to full length)
 }

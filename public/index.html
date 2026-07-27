@@ -19,8 +19,35 @@
       <label class="field-label">Asset class</label>
       <div id="asset-class-group" class="seg-group"></div>
 
-      <label class="field-label">Contract type</label>
-      <div id="contract-group" class="contract-list"></div>
+      <div id="contract-row">
+        <label class="field-label">Contract type</label>
+        <div id="contract-group" class="contract-list"></div>
+      </div>
+
+      <!-- Bernoulli-trials settings: shown only when the Trials asset class is selected. -->
+      <div id="trials-settings" class="hidden">
+        <label class="field-label" for="trial-prob">
+          Success probability: <b id="trial-prob-val">60%</b>
+        </label>
+        <input id="trial-prob" type="range" min="1" max="99" step="1" value="60" />
+        <p class="hint-text">Chance each independent trial is a success (e.g. Leo beats William 60% of the time).</p>
+
+        <div class="toggle-row">
+          <input type="checkbox" id="series-mode" />
+          <label for="series-mode" class="toggle-label">
+            <span class="toggle-title">Series mode (race to a target)</span>
+            <span class="toggle-desc">Pays $1.00 if successes reach the target before the trials run out, else $0.00 (like a best-of-seven, first-to-four). Untick to instead settle on the concrete number of successes.</span>
+          </label>
+        </div>
+
+        <div id="success-target-row">
+          <label class="field-label" for="success-target">
+            Success target: <b id="success-target-val">4</b>
+          </label>
+          <input id="success-target" type="range" min="1" max="20" step="1" value="4" />
+          <p class="hint-text">Successes needed to win the series. With N trials and target T, this is a best-of-N, first-to-T.</p>
+        </div>
+      </div>
 
       <label class="field-label" for="num-assets">
         Number of assets: <b id="num-assets-val">5</b>
@@ -28,17 +55,21 @@
       </label>
       <input id="num-assets" type="range" min="2" max="13" value="5" />
 
-      <label class="field-label" for="num-rounds">
-        Number of rounds: <b id="num-rounds-val">5</b>
-      </label>
-      <input id="num-rounds" type="range" min="1" max="20" value="5" />
-      <p class="hint-text" id="rounds-note"></p>
+      <div id="num-rounds-row">
+        <label class="field-label" for="num-rounds">
+          Number of rounds: <b id="num-rounds-val">5</b>
+        </label>
+        <input id="num-rounds" type="range" min="1" max="20" value="5" />
+        <p class="hint-text" id="rounds-note"></p>
+      </div>
 
-      <label class="field-label" for="private-per-player">
-        Private cards per player: <b id="private-per-player-val">0</b>
-      </label>
-      <input id="private-per-player" type="range" min="0" max="3" value="0" />
-      <p class="hint-text" id="private-note">Each player is privately dealt this many extra assets, never revealed to others. They <b>count toward the main contract settlement</b> just like the community cards. Note: hints describe the shared community cards only — your private card is extra and is <b>not</b> counted in them. 0 = off (everyone sees the same info).</p>
+      <div id="private-row">
+        <label class="field-label" for="private-per-player">
+          Private cards per player: <b id="private-per-player-val">0</b>
+        </label>
+        <input id="private-per-player" type="range" min="0" max="3" value="0" />
+        <p class="hint-text" id="private-note">Each player is privately dealt this many extra assets, never revealed to others. They <b>count toward the main contract settlement</b> just like the community cards. Note: hints describe the shared community cards only — your private card is extra and is <b>not</b> counted in them. 0 = off (everyone sees the same info).</p>
+      </div>
 
       <label class="field-label" id="round-duration-label" for="round-duration">
         Round duration: <b id="round-duration-val">60s</b>
