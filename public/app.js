@@ -224,6 +224,13 @@ socket.on('privateAssets', (assets) => {
 function renderHints() {
   const wrap = $('hints');
   wrap.innerHTML = '';
+  // Section label so it's clear this row is the player's private clues, not public info.
+  if (hintCards.length || myPrivateAssets.length) {
+    const heading = document.createElement('div');
+    heading.className = 'hints-heading';
+    heading.textContent = 'Your private info';
+    wrap.appendChild(heading);
+  }
   for (const a of myPrivateAssets) {
     const div = document.createElement('div');
     div.className = 'hint-card revealed private-card';
@@ -233,15 +240,18 @@ function renderHints() {
   for (const c of hintCards) {
     const div = document.createElement('div');
     div.className = 'hint-card revealed';
-    div.innerHTML = `<div class="hl">${c.label}</div><div class="hv">${c.value}</div>`;
+    // Explicitly tag each as a HINT so players know it's a private clue only they
+    // hold — not a public fact — and that other players may hold different ones.
+    div.innerHTML = `<div class="hint-tag">🔒 Your hint</div><div class="hl">${c.label}</div><div class="hv">${c.value}</div>`;
     wrap.appendChild(div);
   }
-  // Hints describe only the shared community cards. Clarify this when the player
-  // also holds a private card, since "assets"/"mean" then excludes that card.
-  if (hintCards.length && myPrivateAssets.length) {
+  // Clarify what a hint is: private, per-player, and only about the community cards.
+  if (hintCards.length) {
     const note = document.createElement('div');
     note.className = 'hint-scope-note';
-    note.textContent = 'Hints describe the shared community cards only — your private card is extra and not counted in them.';
+    note.textContent = myPrivateAssets.length
+      ? 'A hint is a private clue only you can see — other players get different hints. Hints describe the shared community cards only; your private card is extra and not counted in them.'
+      : 'A hint is a private clue only you can see — other players may hold different hints about the shared community cards.';
     wrap.appendChild(note);
   }
 }

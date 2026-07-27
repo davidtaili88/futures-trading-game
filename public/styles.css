@@ -176,11 +176,19 @@ main {
 /* ---------- Hints ---------- */
 .hints { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
 .hints-inline { }
+.hints-heading {
+  flex-basis: 100%; font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+  text-transform: uppercase; color: var(--muted); margin-bottom: 2px;
+}
 .hint-card {
   background: var(--panel2); border: 1px solid var(--gold);
   border-radius: 8px; padding: 8px 12px;
   text-align: center; flex: 1; min-width: 80px;
   display: flex; flex-direction: column; justify-content: center;
+}
+.hint-card .hint-tag {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+  color: var(--gold); opacity: 0.85; margin-bottom: 4px;
 }
 .hint-card .hl { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
 .hint-card .hv { font-size: 18px; font-weight: 700; color: var(--gold); }
