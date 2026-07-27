@@ -114,7 +114,7 @@ function applyRoundNet(room, playerName, signedDelta) {
 const BOT_MISTAKE_RATE = 0.15;   // chance per bidding turn to bid off-model
 const BOT_MARGIN_K = 0.6;        // bid margin ≈ K * stdev (confidence-scaled)
 const BOT_TAKE_EDGE_K = 0.5;     // take only if |fair - quote| > K * stdev
-const BOT_MIN_MARGIN = 0.1;      // floor: confident bots can quote as tight as 0.1
+const BOT_MIN_MARGIN = 0.01;     // floor: confident bots can quote as tight as 0.01
 const BOT_ACT_MIN_MS = 500;      // action jitter lower bound
 const BOT_ACT_MAX_MS = 3000;     // action jitter upper bound
 // Open-outcry (non-MM) bot tuning. Bots quote a fairly TIGHT two-sided market
@@ -177,13 +177,18 @@ function botBidMargin(est) {
   } else {
     margin = BOT_MARGIN_K * est.stdev * jitter;
   }
-  // Round to 0.1 so a confident bot (tiny stdev) can bid as tight as 0.1.
-  return Math.max(BOT_MIN_MARGIN, round1(margin));
+  // Round to 0.01 so a confident bot (tiny stdev) can bid as tight as the 0.01 tick.
+  return Math.max(BOT_MIN_MARGIN, round2(margin));
 }
 
 // Round to 1 decimal place (0.1 granularity).
 function round1(x) {
   return Math.round(x * 10) / 10;
+}
+
+// Round to 2 decimal places (0.01 tick) — matches the market's cent granularity.
+function round2(x) {
+  return Math.round(x * 100) / 100;
 }
 
 // Price granularity and minimum quote half-spread that suit the contract's SCALE.
@@ -203,8 +208,10 @@ function priceScale(room) {
 // with spread exactly equal to the winning margin (server requires spread==margin
 // after 2-decimal rounding). Both sides rounded to 0.1 so fractional margins hold.
 function botQuote(est, margin) {
-  const bid = round1(est.fair - margin / 2);
-  return { bid, ask: round1(bid + margin) };
+  // Round to the 0.01 tick so bid+margin reproduces the spread exactly (the
+  // server requires the maker's spread to equal their winning margin).
+  const bid = round2(est.fair - margin / 2);
+  return { bid, ask: round2(bid + margin) };
 }
 
 // Bot taker decision vs a maker's quote. Returns { side, qty } or null.
@@ -1111,10 +1118,10 @@ io.on('connection', (socket) => {
     if (!room.mm || room.mm.phase !== 'bidding') return;
     margin = parseFloat(margin);
     if (!isFinite(margin) || margin <= 0) return;
-    // Enforce a 0.1 floor: a margin that rounds to 0 (e.g. 0.004) would win the
+    // Enforce a 0.01 floor: a margin that rounds to 0 (e.g. 0.004) would win the
     // maker role with a zero spread, and setMarket can never accept ask<=bid —
-    // that deadlocks the round in the 'quoting' phase forever.
-    room.mm.bids[socket.id] = Math.max(0.1, Math.round(margin * 100) / 100);
+    // that deadlocks the round in the 'quoting' phase forever. 0.01 is the tick.
+    room.mm.bids[socket.id] = Math.max(0.01, Math.round(margin * 100) / 100);
     broadcast(roomId);
 
     // Auto-resolve once every connected player has bid.

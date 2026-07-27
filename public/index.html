@@ -49,6 +49,15 @@
         </div>
       </div>
 
+      <!-- Poisson-process settings: shown only when the Poisson asset class is selected. -->
+      <div id="poisson-settings" class="hidden">
+        <label class="field-label" for="poisson-rate">
+          Intensity (λ): <b id="poisson-rate-val">3.0</b>
+        </label>
+        <input id="poisson-rate" type="range" min="1" max="200" step="1" value="30" />
+        <p class="hint-text">Mean number of events per interval. Each round reveals one interval's event count; the contract settles to the running total (the value of the process).</p>
+      </div>
+
       <label class="field-label" for="num-assets">
         Number of assets: <b id="num-assets-val">5</b>
         <span class="muted" id="num-assets-unit"></span>

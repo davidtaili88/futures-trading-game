@@ -102,12 +102,46 @@ const ASSET_CLASSES = {
     valueMax: 1,
     maxAssets: 20,
   },
+
+  // Poisson process: each "asset" is one time interval, whose value is the number
+  // of events that occurred in it — a Poisson(λ) count (λ from settings.poissonRate;
+  // default 3). Summing the interval counts gives the value N(t) of the process as
+  // it runs. `draw`/`sampleValue` accept { lambda }. Used by the Poisson Process
+  // contract (cumulative event count); also usable by the general stat contracts.
+  poisson: {
+    label: 'Poisson',
+    unit: 'interval',
+    draw(n, { lambda = 3 } = {}) {
+      return Array.from({ length: n }, () => {
+        const v = samplePoisson(lambda);
+        return { kind: 'poisson', label: `${v}`, value: v };
+      });
+    },
+    sampleValue({ lambda = 3 } = {}) {
+      return samplePoisson(lambda);
+    },
+    valueMin: 0,
+    valueMax: Infinity, // unbounded count (true Poisson)
+    maxAssets: 20,
+  },
 };
 
-// Options passed to an asset class's draw/sampleValue for this game (currently
-// just the Bernoulli success probability). Safe for classes that ignore them.
+// Draw a Poisson(λ) random count via Knuth's algorithm. λ is clamped ≥ 0.
+function samplePoisson(lambda) {
+  const L = Math.exp(-Math.max(0, lambda));
+  let k = 0;
+  let prod = 1;
+  do {
+    k++;
+    prod *= Math.random();
+  } while (prod > L);
+  return k - 1;
+}
+
+// Options passed to an asset class's draw/sampleValue for this game: the Bernoulli
+// success probability and the Poisson rate. Safe for classes that ignore them.
 function classOpts(settings) {
-  return { p: settings?.trialProb ?? 0.5 };
+  return { p: settings?.trialProb ?? 0.5, lambda: settings?.poissonRate ?? 3 };
 }
 
 // ---------- Contract definitions ----------
@@ -247,6 +281,14 @@ const CONTRACTS = [
       return successes >= target ? 1 : 0;
     },
   },
+  // ----- Poisson-process contract (assetClass 'poisson' only) -----
+  {
+    id: 'poisson_value',
+    name: 'Poisson Process',
+    description: 'Settles to the TOTAL number of events across all intervals — the value of the process.',
+    // Each interval contributes its event count; the process value is their sum.
+    settle: (vals) => vals.reduce((a, b) => a + b, 0),
+  },
 ];
 
 // Per-game contract parameters, rolled once in newGame and stored on the game's
@@ -275,14 +317,16 @@ function rollContractParams(contract, cls) {
 function contractDisplayName(contract, params = {}) {
   if (contract.id === 'count_above_k' && params.k != null) return `Count ≥ ${params.k}`;
   if (contract.id === 'bernoulli_series' && params.target != null) return `Series (first to ${params.target})`;
+  if (contract.id === 'poisson_value' && params.lambda != null) return `Poisson Process (λ=${params.lambda})`;
   return contract.name;
 }
 
 function makeHintCards(contract, assets) {
-  // Bernoulli-trials contracts are fully public: everyone watches the same
-  // sequence of trials with a known success probability, so there is no private
-  // signal to hand out. No hints.
-  if (contract.id === 'bernoulli_count' || contract.id === 'bernoulli_series') return [];
+  // The Bernoulli-trials and Poisson-process contracts are fully public: everyone
+  // watches the same sequence unfold with a known parameter (success probability
+  // or rate λ), so there is no private signal to hand out. No hints.
+  if (contract.id === 'bernoulli_count' || contract.id === 'bernoulli_series'
+      || contract.id === 'poisson_value') return [];
 
   const vals = assets.map((a) => a.value);
   const n = vals.length;
@@ -410,17 +454,18 @@ export function normalizeSettings(s = {}) {
   let numRounds = parseInt(s.numRounds, 10);
   if (!Number.isFinite(numRounds)) numRounds = numAssets;
   numRounds = Math.max(1, Math.min(20, numRounds));
-  // Trials reveal exactly one outcome per round, so the number of rounds is the
-  // number of trials (the series may still end earlier — see seriesDecidedRound).
-  if (classKey === 'trials') numRounds = numAssets;
+  // Trials/Poisson reveal exactly one outcome per round, so the number of rounds
+  // equals the number of intervals (a trials series may still end earlier — see
+  // seriesDecidedRound).
+  if (classKey === 'trials' || classKey === 'poisson') numRounds = numAssets;
   // privatePerPlayer: hole cards each player privately holds; they count toward
   // settlement but are never revealed publicly. 0 disables the private-card model.
   let privatePerPlayer = parseInt(s.privatePerPlayer, 10);
   if (!Number.isFinite(privatePerPlayer)) privatePerPlayer = 0;
   privatePerPlayer = Math.max(0, Math.min(3, privatePerPlayer));
-  // Trials are a single shared sequence (a series everyone watches) — there are
-  // no per-player private trials, so force private cards off for that class.
-  if (classKey === 'trials') privatePerPlayer = 0;
+  // Trials/Poisson are a single shared sequence everyone watches — there are no
+  // per-player private draws, so force private cards off for those classes.
+  if (classKey === 'trials' || classKey === 'poisson') privatePerPlayer = 0;
   // numBots: computer players added to the game (both trading modes). 0 disables bots.
   let numBots = parseInt(s.numBots, 10);
   if (!Number.isFinite(numBots)) numBots = 0;
@@ -442,9 +487,14 @@ export function normalizeSettings(s = {}) {
   // Target must be reachable (≤ trials) and positive.
   successTarget = Math.max(1, Math.min(numAssets, successTarget));
 
+  // Poisson rate λ (mean events per interval; only meaningful for 'poisson').
+  let poissonRate = parseFloat(s.poissonRate);
+  if (!Number.isFinite(poissonRate)) poissonRate = 3;
+  poissonRate = Math.max(0.1, Math.min(20, Math.round(poissonRate * 10) / 10));
+
   return {
     assetClass: classKey, numAssets, numRounds, privatePerPlayer, numBots, contractId,
-    trialProb, seriesMode, successTarget,
+    trialProb, seriesMode, successTarget, poissonRate,
   };
 }
 
@@ -452,7 +502,7 @@ export function defaultSettings() {
   return {
     assetClass: 'cards', numAssets: 5, numRounds: 5, privatePerPlayer: 0, numBots: 0,
     contractId: null, roundDuration: 60, positionLimit: 10,
-    trialProb: 0.6, seriesMode: false, successTarget: 4,
+    trialProb: 0.6, seriesMode: false, successTarget: 4, poissonRate: 3,
   };
 }
 
@@ -561,13 +611,14 @@ function hintMatches(hint, communityValues) {
   return evalFn(communityValues, hint) === hint.value;
 }
 
-// Expose contract metadata for the settings UI. The Bernoulli contracts are
-// excluded: they only apply to the 'trials' asset class and are auto-selected by
-// the seriesMode toggle, not chosen from the general contract picker.
-const TRIALS_CONTRACT_IDS = ['bernoulli_count', 'bernoulli_series'];
+// Expose contract metadata for the settings UI. Class-specific contracts are
+// excluded: they only apply to their own asset class and are auto-selected (the
+// Bernoulli ones by the seriesMode toggle, the Poisson one by the class itself),
+// not chosen from the general contract picker.
+const CLASS_SPECIFIC_CONTRACT_IDS = ['bernoulli_count', 'bernoulli_series', 'poisson_value'];
 export function contractInfo() {
   return CONTRACTS
-    .filter((c) => !TRIALS_CONTRACT_IDS.includes(c.id))
+    .filter((c) => !CLASS_SPECIFIC_CONTRACT_IDS.includes(c.id))
     .map(({ id, name, description }) => ({ id, name, description }));
 }
 
@@ -583,23 +634,36 @@ export function newGame(rawSettings) {
   const cls = ASSET_CLASSES[settings.assetClass];
   const opts = classOpts(settings);
 
-  // The 'trials' class pins its contract by the seriesMode toggle (not random):
-  // Series (race to a target, pays $1/$0) or Successes (concrete count).
+  // Some asset classes pin their own contract (not random / not user-picked):
+  //   trials  → Series or Successes, by the seriesMode toggle
+  //   poisson → Poisson Process (cumulative event count)
+  // Everything else picks the user's contract, or a random GENERAL contract
+  // (class-specific ones are excluded from the random pool so e.g. a cards game
+  // can't land on the Poisson contract).
   let contract;
   if (settings.assetClass === 'trials') {
     contract = CONTRACTS.find((c) => c.id === (settings.seriesMode ? 'bernoulli_series' : 'bernoulli_count'));
+  } else if (settings.assetClass === 'poisson') {
+    contract = CONTRACTS.find((c) => c.id === 'poisson_value');
+  } else if (settings.contractId) {
+    contract = CONTRACTS.find((c) => c.id === settings.contractId);
   } else {
-    contract = settings.contractId
-      ? CONTRACTS.find((c) => c.id === settings.contractId)
-      : CONTRACTS[Math.floor(Math.random() * CONTRACTS.length)];
+    const pool = CONTRACTS.filter((c) => !CLASS_SPECIFIC_CONTRACT_IDS.includes(c.id));
+    contract = pool[Math.floor(Math.random() * pool.length)];
   }
 
   const assets = cls.draw(settings.numAssets, opts);
-  // Per-game contract parameters. For trials, carry the success target (and p)
-  // so settle/estimate can decide the series; otherwise roll the usual params.
-  const params = settings.assetClass === 'trials'
-    ? { target: settings.successTarget, p: settings.trialProb }
-    : rollContractParams(contract, cls);
+  // Per-game contract parameters. For trials, carry the success target (and p) so
+  // settle/estimate can decide the series; for poisson, carry the rate λ; else
+  // roll the usual params.
+  let params;
+  if (settings.assetClass === 'trials') {
+    params = { target: settings.successTarget, p: settings.trialProb };
+  } else if (settings.assetClass === 'poisson') {
+    params = { lambda: settings.poissonRate };
+  } else {
+    params = rollContractParams(contract, cls);
+  }
   const settlement = contract.settle(assets.map((a) => a.value), params);
   const hintCards = makeHintCards(contract, assets);
   return {

@@ -66,6 +66,7 @@ socket.on('config', ({ assetClasses: classes, contracts: ctrs, current, gameInPr
   $('trial-prob').value = Math.round((current.trialProb ?? 0.6) * 100);
   $('series-mode').checked = !!current.seriesMode;
   $('success-target').value = current.successTarget ?? 4;
+  $('poisson-rate').value = Math.round((current.poissonRate ?? 3) * 10);
   syncSettingsLabels();
   syncBotsVisibility();
   syncRoundDurationLabel();
@@ -147,15 +148,20 @@ function syncBotsVisibility() {
   $('num-bots-val').textContent = parseInt($('num-bots').value, 10);
 }
 
-// Show the Bernoulli-trials controls (and hide the contract picker, private
-// cards, and number-of-rounds, which don't apply) when Trials is selected.
+// The Trials and Poisson classes have their own settings and pin their own
+// contract, so show their controls and hide the contract picker / private cards /
+// number-of-rounds (which don't apply) when either is selected.
 function syncTrialsVisibility() {
   const isTrials = chosenClass === 'trials';
+  const isPoisson = chosenClass === 'poisson';
+  const special = isTrials || isPoisson;
   $('trials-settings').classList.toggle('hidden', !isTrials);
-  $('contract-row').classList.toggle('hidden', isTrials);
-  $('private-row').classList.toggle('hidden', isTrials);
-  $('num-rounds-row').classList.toggle('hidden', isTrials);
+  $('poisson-settings').classList.toggle('hidden', !isPoisson);
+  $('contract-row').classList.toggle('hidden', special);
+  $('private-row').classList.toggle('hidden', special);
+  $('num-rounds-row').classList.toggle('hidden', special);
   if (isTrials) syncTrialsLabels();
+  if (isPoisson) syncPoissonLabels();
 }
 
 function syncTrialsLabels() {
@@ -172,6 +178,12 @@ function syncTrialsLabels() {
   $('success-target-val').textContent = parseInt(tSlider.value, 10);
 }
 
+// The λ slider carries integer steps = λ×10, so 0.1-granularity from 0.1 to 20.0.
+function syncPoissonLabels() {
+  const lambda = parseInt($('poisson-rate').value, 10) / 10;
+  $('poisson-rate-val').textContent = lambda.toFixed(1);
+}
+
 $('num-assets').addEventListener('input', () => { syncSettingsLabels(); syncTrialsLabels(); });
 $('num-rounds').addEventListener('input', syncSettingsLabels);
 $('private-per-player').addEventListener('input', syncSettingsLabels);
@@ -182,6 +194,7 @@ $('mm-mode').addEventListener('change', syncBotsVisibility);
 $('trial-prob').addEventListener('input', syncTrialsLabels);
 $('series-mode').addEventListener('change', syncTrialsLabels);
 $('success-target').addEventListener('input', syncTrialsLabels);
+$('poisson-rate').addEventListener('input', syncPoissonLabels);
 $('start-btn').addEventListener('click', startGame);
 $('name-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') startGame(); });
 
@@ -224,6 +237,7 @@ function applySettings() {
     trialProb: parseInt($('trial-prob').value, 10) / 100,
     seriesMode: $('series-mode').checked,
     successTarget: parseInt($('success-target').value, 10),
+    poissonRate: parseInt($('poisson-rate').value, 10) / 10,
   });
   $('settings-overlay').classList.add('hidden');
 }
@@ -350,7 +364,7 @@ $('quote-submit-btn').addEventListener('click', () => {
 
 $('bid-submit-btn').addEventListener('click', () => {
   const margin = parseFloat($('bid-input').value);
-  if (!isFinite(margin) || margin < 0.1) { $('bid-status').textContent = 'Enter a margin of at least 0.1.'; return; }
+  if (!isFinite(margin) || margin < 0.01) { $('bid-status').textContent = 'Enter a margin of at least 0.01.'; return; }
   socket.emit('submitBid', margin);
   $('bid-submit-btn').disabled = true;
   $('bid-waiting').classList.remove('hidden');
@@ -616,12 +630,18 @@ function renderContract(game) {
   const wrap = $('assets');
   wrap.innerHTML = '';
   let succ = 0;
+  let poissonTotal = 0;
   for (const a of game.revealedAssets) {
     const div = document.createElement('div');
     if (a.kind === 'trial') {
       if (a.value === 1) succ++;
       div.className = 'asset trial' + (a.value === 1 ? ' success' : ' fail');
       div.innerHTML = `<div class="av">${a.value === 1 ? '✔' : '✕'}</div><div class="as">${a.value === 1 ? 'success' : 'fail'}</div>`;
+    } else if (a.kind === 'poisson') {
+      poissonTotal += a.value;
+      div.className = 'asset poisson';
+      // Each interval shows its own event count, plus the running process total.
+      div.innerHTML = `<div class="av">${a.value}</div><div class="as">Σ ${poissonTotal}</div>`;
     } else {
       if (a.kind === 'die') div.className = 'asset die';
       else if (a.kind === 'number') div.className = 'asset number';
@@ -631,13 +651,24 @@ function renderContract(game) {
     wrap.appendChild(div);
   }
   if (game.revealedCount === 0) {
-    wrap.innerHTML = '<div class="muted" style="align-self:center;">No trials yet — the first result is coming.</div>';
+    const msg = game.contract.assetClass === 'poisson'
+      ? 'No intervals yet — the first event count is coming.'
+      : game.contract.assetClass === 'trials'
+        ? 'No trials yet — the first result is coming.'
+        : 'No assets revealed yet — click "Next Round".';
+    wrap.innerHTML = `<div class="muted" style="align-self:center;">${msg}</div>`;
   } else if (game.contract.assetClass === 'trials') {
     // Running tally under the trial row — successes vs fails so far.
     const fails = game.revealedCount - succ;
     const tally = document.createElement('div');
     tally.className = 'trial-tally';
     tally.innerHTML = `<span class="t-succ">${succ} success</span> · <span class="t-fail">${fails} fail</span> of ${game.totalAssets} trials`;
+    wrap.appendChild(tally);
+  } else if (game.contract.assetClass === 'poisson') {
+    // Running total under the interval row — the process value so far.
+    const tally = document.createElement('div');
+    tally.className = 'trial-tally';
+    tally.innerHTML = `Process value: <span class="t-succ">${poissonTotal}</span> events over ${game.revealedCount}/${game.totalAssets} intervals`;
     wrap.appendChild(tally);
   }
 
