@@ -159,9 +159,13 @@ function botKnownState(room, botPlayer) {
   return { revealedValues, ownPrivateValues, hiddenCommunityCount, otherPrivateCount, hint };
 }
 
-// Bot's fair-value estimate + uncertainty for the current round.
+// Bot's fair-value estimate + uncertainty for the current round. The Monte Carlo
+// sim budget is the configurable `botSims` setting: higher = sharper (more
+// accurate) bots; lower = noisier estimates that misprice more, giving human
+// players more edge. Applies to every contract type.
 function botEstimate(room, botPlayer) {
-  return estimateFair(room.game, { ...botKnownState(room, botPlayer), sims: 500 });
+  const sims = room.settings.botSims ?? 500;
+  return estimateFair(room.game, { ...botKnownState(room, botPlayer), sims });
 }
 
 // Bid margin for a bot given its estimate. Normally confidence-scaled

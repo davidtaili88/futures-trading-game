@@ -58,6 +58,7 @@ socket.on('config', ({ assetClasses: classes, contracts: ctrs, current, gameInPr
   $('round-duration').value = current.roundDuration ?? 60;
   $('position-limit').value = current.positionLimit ?? 10;
   $('num-bots').value = current.numBots ?? 0;
+  $('bot-sims').value = current.botSims ?? 500;
   renderAssetClassButtons();
   renderContractButtons();
   $('num-assets').value = current.numAssets;
@@ -145,7 +146,24 @@ function syncPositionLimitLabel() {
 
 // Bots play both trading modes — the slider is always shown.
 function syncBotsVisibility() {
-  $('num-bots-val').textContent = parseInt($('num-bots').value, 10);
+  const n = parseInt($('num-bots').value, 10);
+  $('num-bots-val').textContent = n;
+  // The bot-quality slider only matters when there are bots.
+  $('bot-sims-row').classList.toggle('hidden', n === 0);
+  syncBotSimsLabel();
+}
+
+function syncBotSimsLabel() {
+  const sims = parseInt($('bot-sims').value, 10);
+  $('bot-sims-val').textContent = `${sims} sims`;
+  // A rough human-readable quality tier so the number means something.
+  let tier;
+  if (sims <= 25) tier = '(very weak)';
+  else if (sims <= 75) tier = '(weak)';
+  else if (sims <= 250) tier = '(fair)';
+  else if (sims <= 800) tier = '(sharp)';
+  else tier = '(very sharp)';
+  $('bot-sims-tier').textContent = tier;
 }
 
 // The Trials and Poisson classes have their own settings and pin their own
@@ -190,6 +208,7 @@ $('private-per-player').addEventListener('input', syncSettingsLabels);
 $('round-duration').addEventListener('input', syncRoundDurationLabel);
 $('position-limit').addEventListener('input', syncPositionLimitLabel);
 $('num-bots').addEventListener('input', syncBotsVisibility);
+$('bot-sims').addEventListener('input', syncBotSimsLabel);
 $('mm-mode').addEventListener('change', syncBotsVisibility);
 $('trial-prob').addEventListener('input', syncTrialsLabels);
 $('series-mode').addEventListener('change', syncTrialsLabels);
@@ -232,6 +251,7 @@ function applySettings() {
     privatePerPlayer: parseInt($('private-per-player').value, 10),
     marketMaking: $('mm-mode').checked,
     numBots: parseInt($('num-bots').value, 10),
+    botSims: parseInt($('bot-sims').value, 10),
     roundDuration: parseInt($('round-duration').value, 10),
     positionLimit: parseInt($('position-limit').value, 10),
     trialProb: parseInt($('trial-prob').value, 10) / 100,

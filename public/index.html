@@ -106,6 +106,14 @@
         </label>
         <input id="num-bots" type="range" min="0" max="8" value="0" />
         <p class="hint-text">Computer traders that play either mode. Each estimates fair value by simulation and quotes wider when unsure. In market-making mode they bid, make markets, and take (~15% of bids deliberately off); in open-outcry mode they post two-sided limit orders and pick off mispriced resting orders.</p>
+
+        <div id="bot-sims-row">
+          <label class="field-label" for="bot-sims">
+            Bot quality: <b id="bot-sims-val">500 sims</b> <span class="muted" id="bot-sims-tier"></span>
+          </label>
+          <input id="bot-sims" type="range" min="5" max="2000" step="5" value="500" />
+          <p class="hint-text">Monte Carlo samples each bot runs to estimate fair value. Higher = sharper, more accurate bots; lower = noisier estimates that misprice more often, giving human players more edge.</p>
+        </div>
       </div>
 
       <div id="lobby-section" class="hidden">

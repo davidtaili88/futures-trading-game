@@ -470,6 +470,12 @@ export function normalizeSettings(s = {}) {
   let numBots = parseInt(s.numBots, 10);
   if (!Number.isFinite(numBots)) numBots = 0;
   numBots = Math.max(0, Math.min(8, numBots));
+  // botSims: Monte Carlo samples each bot uses to estimate fair value. Higher =
+  // sharper (more accurate) bots; lower = noisier estimates that misprice more,
+  // giving human players more edge. Clamped to a sane range.
+  let botSims = parseInt(s.botSims, 10);
+  if (!Number.isFinite(botSims)) botSims = 500;
+  botSims = Math.max(5, Math.min(2000, botSims));
   const contractId = CONTRACTS.find((c) => c.id === s.contractId) ? s.contractId : null;
 
   // Bernoulli-trials parameters (only meaningful for the 'trials' asset class):
@@ -494,7 +500,7 @@ export function normalizeSettings(s = {}) {
 
   return {
     assetClass: classKey, numAssets, numRounds, privatePerPlayer, numBots, contractId,
-    trialProb, seriesMode, successTarget, poissonRate,
+    trialProb, seriesMode, successTarget, poissonRate, botSims,
   };
 }
 
@@ -502,7 +508,7 @@ export function defaultSettings() {
   return {
     assetClass: 'cards', numAssets: 5, numRounds: 5, privatePerPlayer: 0, numBots: 0,
     contractId: null, roundDuration: 60, positionLimit: 10,
-    trialProb: 0.6, seriesMode: false, successTarget: 4, poissonRate: 3,
+    trialProb: 0.6, seriesMode: false, successTarget: 4, poissonRate: 3, botSims: 500,
   };
 }
 
