@@ -17,6 +17,7 @@ at the true value. Highest PnL wins.
     - **Series mode** — a race: pays **$1.00** if successes reach an adjustable target before the trials run out, else **$0.00**, and settles **early** the moment the outcome is clinched. E.g. Leo vs William, best-of-seven first-to-four, Leo winning 60% of matches with a result every 15s: 7 trials, p=0.6, target 4, round duration 15.
   - **Poisson Process contract** — pick the Poisson asset class to trade the value of a Poisson process with an adjustable intensity λ. Each round reveals one interval's event count (a Poisson(λ) draw); the contract settles to the running total across all intervals.
   - **Number of assets** and **number of rounds**.
+  - **Tick size** — the minimum price increment (default 0.01; selectable up to 1). Every order and quote price, from humans and bots, snaps to this grid.
 - **Per-player hints** — each player gets one randomly assigned hint (Min, Max, Mean, or Asset Range), hidden by default.
 - **Market Making Mode** — before each round, players bid a spread margin. The tightest quote wins and becomes the market maker, setting their own bid/ask prices. All other players trade at those prices.
 - **Trade ticket**, **live leaderboard** (mark-to-market PnL), and **trade tape**.

@@ -67,6 +67,11 @@ body {
   font-size: 13px; margin: 16px 0 6px;
 }
 .field-label b { color: var(--text); }
+.select-input {
+  width: 100%; padding: 10px 12px; border-radius: 8px;
+  background: var(--panel2); border: 1px solid var(--border);
+  color: var(--text); font-size: 14px;
+}
 .seg-group { display: flex; gap: 8px; }
 .seg-btn {
   flex: 1; padding: 12px 4px; border-radius: 8px;

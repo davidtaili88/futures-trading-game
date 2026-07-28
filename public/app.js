@@ -68,6 +68,7 @@ socket.on('config', ({ assetClasses: classes, contracts: ctrs, current, gameInPr
   $('series-mode').checked = !!current.seriesMode;
   $('success-target').value = current.successTarget ?? 4;
   $('poisson-rate').value = Math.round((current.poissonRate ?? 3) * 10);
+  $('tick-size').value = String(current.tickSize ?? 0.01);
   syncSettingsLabels();
   syncBotsVisibility();
   syncRoundDurationLabel();
@@ -258,6 +259,7 @@ function applySettings() {
     seriesMode: $('series-mode').checked,
     successTarget: parseInt($('success-target').value, 10),
     poissonRate: parseInt($('poisson-rate').value, 10) / 10,
+    tickSize: parseFloat($('tick-size').value),
   });
   $('settings-overlay').classList.add('hidden');
 }
@@ -366,7 +368,10 @@ socket.on('marketSet', ({ makerName, bid, ask }) => {
 $('quote-bid').addEventListener('input', () => {
   const bid = parseFloat($('quote-bid').value);
   if (isFinite(bid) && myWinMargin != null) {
-    $('quote-ask').value = Math.round((bid + myWinMargin) * 100) / 100;
+    // Preview the ask as (tick-snapped bid) + margin, matching how the server
+    // derives it — so the maker sees exactly what will be set.
+    const snapped = Math.round(bid / currentTick) * currentTick;
+    $('quote-ask').value = Math.round((snapped + myWinMargin) * 100) / 100;
   }
 });
 
@@ -462,6 +467,7 @@ $('sell-btn').addEventListener('click', () => sendTrade('sell'));
 // currentMM holds the active market for this round (null if none).
 let currentMM = null;
 let isMMMode = false;
+let currentTick = 0.01;
 
 function sendTrade(side) {
   const qty = parseInt($('qty').value, 10);
@@ -503,6 +509,13 @@ socket.on('tradeError', (text) => {
 socket.on('state', ({ game, players, trades, lastPrice, mm, orderBook, roundEndsAt, roundTradeCount, roundTradeLimit, roundNetPos, roundNetLimit }) => {
   currentMM = mm;
   isMMMode = game.marketMaking;
+  currentTick = game.tickSize ?? 0.01;
+  // Reflect the configured tick as the input step so keyboard/spinner nudges land
+  // on the grid (the server snaps regardless, but this makes the UI honest).
+  const tickStr = String(currentTick);
+  $('price').step = tickStr;
+  $('quote-bid').step = tickStr;
+  $('quote-ask').step = tickStr;
   startCountdown(roundEndsAt);
   const me = players.find(p => p.id === myId);
   const amMaker = mm?.phase === 'trading' && myId === mm.makerId;

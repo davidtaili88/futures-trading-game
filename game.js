@@ -476,6 +476,12 @@ export function normalizeSettings(s = {}) {
   let botSims = parseInt(s.botSims, 10);
   if (!Number.isFinite(botSims)) botSims = 500;
   botSims = Math.max(5, Math.min(2000, botSims));
+  // tickSize: minimum price increment. All order/quote prices snap to a multiple
+  // of this. 0.01 is the finest (default); the user can widen it (e.g. 0.05, 0.25,
+  // 1). Clamped to [0.01, 100].
+  let tickSize = parseFloat(s.tickSize);
+  if (!Number.isFinite(tickSize) || tickSize <= 0) tickSize = 0.01;
+  tickSize = Math.max(0.01, Math.min(100, Math.round(tickSize * 100) / 100));
   const contractId = CONTRACTS.find((c) => c.id === s.contractId) ? s.contractId : null;
 
   // Bernoulli-trials parameters (only meaningful for the 'trials' asset class):
@@ -500,7 +506,7 @@ export function normalizeSettings(s = {}) {
 
   return {
     assetClass: classKey, numAssets, numRounds, privatePerPlayer, numBots, contractId,
-    trialProb, seriesMode, successTarget, poissonRate, botSims,
+    trialProb, seriesMode, successTarget, poissonRate, botSims, tickSize,
   };
 }
 
@@ -509,6 +515,7 @@ export function defaultSettings() {
     assetClass: 'cards', numAssets: 5, numRounds: 5, privatePerPlayer: 0, numBots: 0,
     contractId: null, roundDuration: 60, positionLimit: 10,
     trialProb: 0.6, seriesMode: false, successTarget: 4, poissonRate: 3, botSims: 500,
+    tickSize: 0.01,
   };
 }
 

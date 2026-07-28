@@ -172,7 +172,7 @@ function botEstimate(room, botPlayer) {
 // (wider when uncertain). With probability BOT_MISTAKE_RATE it bids "off-model":
 // a random margin ignoring its true confidence — sometimes too tight (wins the
 // maker role with a bad market to pick off), sometimes too wide.
-function botBidMargin(est) {
+function botBidMargin(room, est) {
   const jitter = 0.85 + Math.random() * 0.3; // ±15% so bots rarely tie exactly
   let margin;
   if (Math.random() < BOT_MISTAKE_RATE) {
@@ -181,18 +181,28 @@ function botBidMargin(est) {
   } else {
     margin = BOT_MARGIN_K * est.stdev * jitter;
   }
-  // Round to 0.01 so a confident bot (tiny stdev) can bid as tight as the 0.01 tick.
-  return Math.max(BOT_MIN_MARGIN, round2(margin));
-}
-
-// Round to 1 decimal place (0.1 granularity).
-function round1(x) {
-  return Math.round(x * 10) / 10;
+  // Snap the margin to the tick grid, floored at one tick, so a confident bot can
+  // quote as tight as the tick and its spread lands exactly on the grid.
+  const t = tickSize(room);
+  return Math.max(t, snapToTick(room, margin));
 }
 
 // Round to 2 decimal places (0.01 tick) — matches the market's cent granularity.
 function round2(x) {
   return Math.round(x * 100) / 100;
+}
+
+// The room's configured minimum price increment (tick size), default 0.01.
+function tickSize(room) {
+  return room.settings.tickSize ?? 0.01;
+}
+
+// Snap a price to the nearest multiple of the room's tick size. All order and
+// quote prices pass through here so the whole market trades on the same grid.
+// (round2 guards floating-point fuzz from the division.)
+function snapToTick(room, price) {
+  const t = tickSize(room);
+  return round2(Math.round(price / t) * t);
 }
 
 // Price granularity and minimum quote half-spread that suit the contract's SCALE.
@@ -201,20 +211,24 @@ function round2(x) {
 // the same 0.5 half-spread for a $1 contract would make quotes span the whole range.
 function priceScale(room) {
   const id = room.game.contract.id;
+  const t = tickSize(room);
+  const snap = (x) => snapToTick(room, x);
   if (id === 'bernoulli_series') {
-    // $1/$0 contract: cent ticks, tight spread, small take-edge floor.
-    return { round: (x) => Math.round(x * 100) / 100, minHalf: 0.02, minEdge: 0.02 };
+    // $1/$0 contract: tight spread + small take-edge floor, but never finer than
+    // the configured tick.
+    return { round: snap, minHalf: Math.max(t, 0.02), minEdge: Math.max(t, 0.02) };
   }
-  return { round: round1, minHalf: BOT_OO_MIN_HALF, minEdge: BOT_OO_EDGE_MIN };
+  // Integer-valued contracts (Sum, Count, …): default to a 0.1-ish grid but honor
+  // a coarser configured tick. Half-spread/edge floors likewise respect the tick.
+  return { round: snap, minHalf: Math.max(t, BOT_OO_MIN_HALF), minEdge: Math.max(t, BOT_OO_EDGE_MIN) };
 }
 
-// Bot's bid/ask when it wins the maker role: centered on its fair estimate,
-// with spread exactly equal to the winning margin (server requires spread==margin
-// after 2-decimal rounding). Both sides rounded to 0.1 so fractional margins hold.
-function botQuote(est, margin) {
-  // Round to the 0.01 tick so bid+margin reproduces the spread exactly (the
-  // server requires the maker's spread to equal their winning margin).
-  const bid = round2(est.fair - margin / 2);
+// Bot's bid/ask when it wins the maker role: centered on its fair estimate, with
+// spread exactly equal to the winning margin (the server requires spread==margin).
+// The bid snaps to the tick grid and the ask is derived as bid+margin, so the
+// spread reproduces the margin exactly (the margin is already tick-aligned).
+function botQuote(room, est, margin) {
+  const bid = snapToTick(room, est.fair - margin / 2);
   return { bid, ask: round2(bid + margin) };
 }
 
@@ -341,6 +355,7 @@ function publicGameState(room) {
     settlement: closed ? room.game.settlement : null,
     marketMaking: room.settings.marketMaking || false,
     positionLimit: room.settings.positionLimit ?? 10,
+    tickSize: room.settings.tickSize ?? 0.01,
     privatePerPlayer: room.settings.privatePerPlayer || 0,
     // On close, reveal every player's private (hole) cards so settlement is auditable.
     privateReveal: closed && (room.settings.privatePerPlayer || 0) > 0
@@ -667,7 +682,7 @@ function scheduleBotBids(roomId) {
       if (r.mm.bids[id] !== undefined) return;           // already bid
       if (!r.players[id]) return;                        // bot removed
       const est = botEstimate(r, r.players[id]);
-      r.mm.bids[id] = botBidMargin(est);
+      r.mm.bids[id] = botBidMargin(r, est);
       broadcast(roomId);
       const connected = connectedPlayerIds(r);
       if (connected.every((cid) => r.mm.bids[cid] !== undefined)) resolveBids(roomId);
@@ -685,7 +700,7 @@ function scheduleBotMakerQuote(roomId, botId) {
     if (room.game.round !== roundAtSchedule) return;
     if (room.mm.makerId !== botId || !room.players[botId]) return;
     const est = botEstimate(room, room.players[botId]);
-    const { bid, ask } = botQuote(est, room.mm.margin);
+    const { bid, ask } = botQuote(room, est, room.mm.margin);
     room.mm.bid = bid;
     room.mm.ask = ask;
     room.mm.phase = 'trading';
@@ -1023,8 +1038,9 @@ io.on('connection', (socket) => {
     if (room.settings.marketMaking) return;
 
     qty = Math.max(1, Math.min(100, parseInt(qty, 10) || 0));
-    price = Math.round(parseFloat(price) * 100) / 100;
+    price = parseFloat(price);
     if (!isFinite(price)) return;
+    price = snapToTick(room, price); // enforce the configured tick grid
     if (side !== 'bid' && side !== 'ask') return;
 
     const orderId = `${socket.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -1122,10 +1138,11 @@ io.on('connection', (socket) => {
     if (!room.mm || room.mm.phase !== 'bidding') return;
     margin = parseFloat(margin);
     if (!isFinite(margin) || margin <= 0) return;
-    // Enforce a 0.01 floor: a margin that rounds to 0 (e.g. 0.004) would win the
-    // maker role with a zero spread, and setMarket can never accept ask<=bid —
-    // that deadlocks the round in the 'quoting' phase forever. 0.01 is the tick.
-    room.mm.bids[socket.id] = Math.max(0.01, Math.round(margin * 100) / 100);
+    // Snap the margin to the tick grid, with a floor of one tick. A zero-spread
+    // margin would let a maker win with ask<=bid, which setMarket can never accept
+    // — deadlocking the round in 'quoting' forever; the one-tick floor prevents it.
+    const t = tickSize(room);
+    room.mm.bids[socket.id] = Math.max(t, snapToTick(room, margin));
     broadcast(roomId);
 
     // Auto-resolve once every connected player has bid.
@@ -1140,10 +1157,15 @@ io.on('connection', (socket) => {
     const room = getRoom(roomId);
     if (!room.mm || room.mm.phase !== 'quoting') return;
     if (socket.id !== room.mm.makerId) return;
-    bid = Math.round(parseFloat(bid) * 100) / 100;
-    ask = Math.round(parseFloat(ask) * 100) / 100;
-    const spread = Math.round((ask - bid) * 100) / 100;
-    if (!isFinite(bid) || !isFinite(ask) || ask <= bid) return;
+    bid = parseFloat(bid);
+    ask = parseFloat(ask);
+    if (!isFinite(bid) || !isFinite(ask)) return;
+    // Snap the bid to the tick grid; derive the ask from the winning margin so the
+    // spread stays exactly equal to it (the margin is itself tick-aligned already).
+    bid = snapToTick(room, bid);
+    ask = round2(bid + room.mm.margin);
+    const spread = round2(ask - bid);
+    if (ask <= bid) return;
     if (spread !== room.mm.margin) return;
     room.mm.bid = bid;
     room.mm.ask = ask;
