@@ -222,6 +222,23 @@ main {
 .private-reveal .pr-name { color: var(--muted); }
 .private-reveal .pr-cards { font-weight: 700; color: var(--gold); }
 
+/* ---------- End-game PnL recap ---------- */
+.pnl-recap { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.1); text-align: left; }
+.pnl-recap .rc-label { font-size: 12px; color: var(--text); font-weight: 700; letter-spacing: 0.5px; margin-bottom: 2px; }
+.pnl-recap .rc-note { font-size: 11px; color: var(--muted); margin-bottom: 10px; }
+.pnl-recap .rc-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.rc-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.rc-card.rc-me { border-color: var(--accent); }
+.rc-name { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+.rc-youtag { display: inline-block; font-size: 9px; font-weight: 700; background: var(--accent); color: #fff; border-radius: 3px; padding: 1px 4px; vertical-align: middle; }
+.rc-table { width: 100%; border-collapse: collapse; font-size: 12px; font-family: ui-monospace, monospace; }
+.rc-table th { color: var(--muted); font-weight: 600; text-align: right; padding: 2px 4px; font-size: 11px; }
+.rc-table th:first-child { text-align: left; }
+.rc-table td { text-align: right; padding: 2px 4px; color: var(--text); }
+.rc-table td.rc-round { text-align: left; color: var(--muted); }
+.rc-table tr.rc-total td { border-top: 1px solid var(--border); font-weight: 700; padding-top: 4px; }
+.rc-table tr.rc-total td:first-child { color: var(--muted); }
+
 /* ---------- Trade ticket ---------- */
 .ticket { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
 .ticket label { display: flex; flex-direction: column; font-size: 12px; color: var(--muted); gap: 4px; }
@@ -253,6 +270,17 @@ main {
 .tape-row .buy { color: var(--green); }
 .tape-row .sell { color: var(--red); }
 .tape-row .tt { color: var(--muted); }
+/* Adverse fill: the resting maker was picked off by a better-informed taker. The
+   whole row reads blue, overriding the buy/sell colors. */
+.tape-row.tape-adverse { background: rgba(47,129,247,0.12); border-left: 3px solid var(--accent); padding-left: 4px; }
+.tape-row.tape-adverse .buy,
+.tape-row.tape-adverse .sell,
+.tape-row.tape-adverse .tt { color: var(--accent); }
+.adverse-tag {
+  display: inline-block; font-size: 10px; font-weight: 700;
+  background: var(--accent); color: #fff;
+  border-radius: 3px; padding: 1px 4px; margin-left: 4px; vertical-align: middle;
+}
 
 /* ---------- Lobby player list ---------- */
 .lobby-list {
@@ -405,6 +433,11 @@ main {
 .ob-cancel-btn { background: var(--panel); border: 1px solid var(--border); color: var(--muted); }
 .ob-take-btn:hover { filter: brightness(1.15); }
 .ob-cancel-btn:hover { border-color: var(--red); color: var(--red); }
+/* Cancel button living in the name column: take the leading flex space but stay a
+   compact left-aligned button (not a full-width bar). */
+.ob-cancel-btn.ob-name {
+  flex: 0 0 auto; margin-right: auto; overflow: visible;
+}
 
 .your-orders { font-size: 12px; color: var(--gold); min-height: 16px; margin-top: 6px; }
 

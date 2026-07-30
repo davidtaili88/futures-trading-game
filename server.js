@@ -363,6 +363,8 @@ function publicGameState(room) {
           .filter((p) => (p.privateAssets?.length ?? 0) > 0)
           .map((p) => ({ name: p.name, assets: p.privateAssets }))
       : null,
+    // End-game recap: per-player, per-round making/taking/adverse PnL breakdown.
+    pnlRecap: closed ? buildPnlRecap(room) : null,
   };
 }
 
@@ -531,6 +533,11 @@ function executeMakerTrade(room, takerId, side, qty, forced = false) {
     ts: Date.now(),
     mmRound: true,
     forced: forced || undefined,
+    // Uniform maker/taker fields so the end-game PnL recap can split making vs
+    // taking in MM mode too (the market-maker is the maker; the non-maker takes).
+    taker: taker.name,
+    maker: maker.name,
+    takerSide: side === 'buy' ? 'bought' : 'sold',
   });
   recordTrade(room, taker.name, maker.name);
   // Track the taker's signed net position change this round for the ±net limit.
@@ -556,6 +563,122 @@ function forceIdleTakers(room) {
   }
 }
 
+// ---- Adverse-selection detection (computed once at settlement) ----
+const HINT_TIER_RANK = { good: 2, medium: 1, bad: 0 };
+// Fraction of the contract's natural scale a fill must miss settlement by to
+// count as a "large" adverse fill. Bump this to require bigger pickoffs.
+const ADVERSE_MISS_FRAC = 0.25;
+
+// The hint tier rank a player held this game (2 good / 1 medium / 0 bad), or -1
+// if they held no hint. Looks up the player's hintKey → the hint card's tier
+// (tier is server-only, retained on room.game.hintCards).
+function hintTierRank(room, name) {
+  // hintKey is set on the live player entry (room.players, keyed by socketId) for
+  // every player — human and bot — at game start; find by name. (playersByName's
+  // hintKey isn't reliably synced, so don't use it here.)
+  const player = Object.values(room.players).find((p) => p.name === name);
+  const key = player?.hintKey;
+  if (!key) return -1;
+  const card = room.game.hintCards.find((c) => c.key === key);
+  return card ? (HINT_TIER_RANK[card.tier] ?? -1) : -1;
+}
+
+// The contract's naive scale: unconditioned MC mean/stdev with nothing revealed.
+// Uses max(|mean|, stdev) so contracts whose mean is ~0 or negative (Odds−Evens)
+// still get a meaningful positive scale. Cached on the game.
+function naiveScale(room) {
+  if (room.game._naiveScale != null) return room.game._naiveScale;
+  const est = estimateFair(room.game, { hiddenCommunityCount: room.game.assets.length, sims: 2000 });
+  const scale = Math.max(Math.abs(est.fair), est.stdev, 1e-6);
+  room.game._naiveScale = scale;
+  return scale;
+}
+
+// Stamp each open-outcry trade with `adverse: true` when the resting (maker) side
+// was picked off by a better-informed taker: (1) the taker held a strictly better
+// hint tier than the maker, (2) the fill went against the maker vs the final
+// settlement (they sold below / bought above it), and (3) the miss is large —
+// |price − settlement| ≥ ADVERSE_MISS_FRAC × the contract's naive scale.
+function markAdverseFills(room) {
+  const s = room.game.settlement;
+  const threshold = ADVERSE_MISS_FRAC * naiveScale(room);
+  for (const t of room.trades) {
+    // Only open-outcry trades carry a maker/taker with a takerSide.
+    if (!t.taker || !t.maker || !t.takerSide) continue;
+    const takerBetter = hintTierRank(room, t.taker) > hintTierRank(room, t.maker);
+    if (!takerBetter) continue;
+    // takerSide 'bought' ⇒ maker SOLD (ask lifted): adverse if settlement > price.
+    // takerSide 'sold'   ⇒ maker BOUGHT (bid hit):  adverse if settlement < price.
+    const makerLost = t.takerSide === 'bought' ? s > t.price : s < t.price;
+    const bigMiss = Math.abs(t.price - s) >= threshold;
+    if (makerLost && bigMiss) t.adverse = true;
+  }
+}
+
+// Per-fill mark-to-settlement PnL for one side. Buying q @ p is worth
+// q*(settlement - p); selling is worth q*(p - settlement).
+function fillPnl(bought, qty, price, settlement) {
+  return bought ? qty * (settlement - price) : qty * (price - settlement);
+}
+
+// Build the end-game PnL recap: for each player, a per-round breakdown of PnL
+// earned by MAKING (their resting orders getting hit) vs TAKING (their aggressive
+// fills), plus the ADVERSE-selection portion (the making PnL on trades where a
+// better-informed taker picked them off — a subset of making, always ≤ 0).
+// Everything is marked to the final settlement, so making+taking sums to each
+// player's total trading PnL. Returns { rounds:[...], players:{ name: {...} } }.
+function buildPnlRecap(room) {
+  const s = room.game.settlement;
+  const roundsSet = new Set();
+  const byPlayer = {}; // name -> { rounds: { r: {making,taking,adverse} }, totals: {...} }
+
+  const ensure = (name, r) => {
+    const p = byPlayer[name] ?? (byPlayer[name] = { rounds: {}, making: 0, taking: 0, adverse: 0, net: 0 });
+    return p.rounds[r] ?? (p.rounds[r] = { making: 0, taking: 0, adverse: 0, net: 0 });
+  };
+
+  for (const t of room.trades) {
+    // Need a resolved maker/taker/side to attribute making vs taking. Auto-matched
+    // crosses with no clear aggressor (rare) are skipped from the split.
+    if (!t.taker || !t.maker || !t.takerSide) continue;
+    const r = t.round;
+    roundsSet.add(r);
+    const takerBought = t.takerSide === 'bought';
+    const takerP = fillPnl(takerBought, t.qty, t.price, s);
+    const makerP = fillPnl(!takerBought, t.qty, t.price, s); // maker is the opposite side
+
+    const tk = ensure(t.taker, r);
+    tk.taking += takerP; tk.net += takerP;
+    byPlayer[t.taker].taking += takerP; byPlayer[t.taker].net += takerP;
+
+    const mk = ensure(t.maker, r);
+    mk.making += makerP; mk.net += makerP;
+    byPlayer[t.maker].making += makerP; byPlayer[t.maker].net += makerP;
+    if (t.adverse) {
+      mk.adverse += makerP;              // makerP is negative on adverse fills
+      byPlayer[t.maker].adverse += makerP;
+    }
+  }
+
+  // Round to cents for display.
+  const round2c = (x) => Math.round(x * 100) / 100;
+  for (const name of Object.keys(byPlayer)) {
+    const P = byPlayer[name];
+    for (const r of Object.keys(P.rounds)) {
+      const R = P.rounds[r];
+      R.making = round2c(R.making); R.taking = round2c(R.taking);
+      R.adverse = round2c(R.adverse); R.net = round2c(R.net);
+    }
+    P.making = round2c(P.making); P.taking = round2c(P.taking);
+    P.adverse = round2c(P.adverse); P.net = round2c(P.net);
+  }
+
+  return {
+    rounds: [...roundsSet].sort((a, b) => a - b),
+    players: byPlayer,
+  };
+}
+
 function settleAll(room) {
   const s = room.game.settlement;
   for (const p of Object.values(room.players)) {
@@ -563,11 +686,19 @@ function settleAll(room) {
     p.position = 0;
     if ((room.tradeCount[p.name] ?? 0) < 2) p.cash -= 20;
   }
+  markAdverseFills(room);
 }
 
 // Auto-match crossing orders in the open-outcry book.
 // Runs after every postOrder. Loops until no cross remains.
-function tryMatchOrders(room) {
+//
+// `aggressorIds` are the order id(s) just added (the incoming, aggressive
+// order(s)) — a single id or a Set. When two orders cross, the RESTING order sets
+// the execution price, so the aggressor gets price improvement (standard
+// price-time priority). E.g. resting ask 10, incoming bid 12 → trade prints at 10.
+function tryMatchOrders(room, aggressorIds = null) {
+  const isAggressor = (id) =>
+    aggressorIds instanceof Set ? aggressorIds.has(id) : aggressorIds === id;
   while (true) {
     if (!room.orderBook.bids.length || !room.orderBook.asks.length) break;
 
@@ -584,7 +715,13 @@ function tryMatchOrders(room) {
     const seller = room.players[bestAsk.socketId];
     if (!buyer || !seller) break;
 
-    const execPrice = Math.round(bestBid.price * 100) / 100;
+    // The resting order (the one that is NOT the just-added aggressor) sets the
+    // price. If neither is flagged as the aggressor (e.g. two orders that were
+    // already resting), fall back to the bid price as before.
+    const restingOrder = isAggressor(bestBid.id) ? bestAsk
+      : isAggressor(bestAsk.id) ? bestBid
+      : bestBid;
+    const execPrice = Math.round(restingOrder.price * 100) / 100;
     const execQty = Math.min(bestBid.qty, bestAsk.qty);
 
     if (!withinLimit(room, buyer, +execQty)) break;
@@ -596,14 +733,26 @@ function tryMatchOrders(room) {
     seller.cash += cost;
     seller.position -= execQty;
 
-    room.trades.push({
+    // Identify aggressor (taker) vs resting (maker) so the tape and adverse-fill
+    // detection can treat a crossing postOrder the same as an explicit takeOrder.
+    // The aggressor is whichever crossing order was just added; if neither is
+    // flagged (two already-resting orders crossed), leave taker/maker unset.
+    const bidIsAggressor = isAggressor(bestBid.id);
+    const askIsAggressor = isAggressor(bestAsk.id);
+    const trade = {
       round: room.game.round,
       buyer: buyer.name,
       seller: seller.name,
       qty: execQty,
       price: execPrice,
       ts: Date.now(),
-    });
+    };
+    if (bidIsAggressor && !askIsAggressor) {
+      trade.taker = buyer.name; trade.maker = seller.name; trade.takerSide = 'bought';
+    } else if (askIsAggressor && !bidIsAggressor) {
+      trade.taker = seller.name; trade.maker = buyer.name; trade.takerSide = 'sold';
+    }
+    room.trades.push(trade);
     recordTrade(room, buyer.name, seller.name);
     applyRoundNet(room, buyer.name, +execQty);
     applyRoundNet(room, seller.name, -execQty);
@@ -824,17 +973,21 @@ function botPostQuote(room, botId, est) {
   const bidQty = Math.min(BOT_OO_MAX_LOT, buyHeadroom);
   const askQty = Math.min(BOT_OO_MAX_LOT, sellHeadroom);
 
-  let posted = false;
   const mkId = () => `${botId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const aggressorIds = new Set();
   if (bidQty > 0) {
-    room.orderBook.bids.push({ id: mkId(), socketId: botId, price: bidPrice, qty: bidQty, name: bot.name });
-    posted = true;
+    const id = mkId();
+    room.orderBook.bids.push({ id, socketId: botId, price: bidPrice, qty: bidQty, name: bot.name });
+    aggressorIds.add(id);
   }
   if (askQty > 0) {
-    room.orderBook.asks.push({ id: mkId(), socketId: botId, price: askPrice, qty: askQty, name: bot.name });
-    posted = true;
+    const id = mkId();
+    room.orderBook.asks.push({ id, socketId: botId, price: askPrice, qty: askQty, name: bot.name });
+    aggressorIds.add(id);
   }
-  if (posted) tryMatchOrders(room);
+  const posted = aggressorIds.size > 0;
+  // The bot's just-posted orders are the aggressors — they cross at the resting price.
+  if (posted) tryMatchOrders(room, aggressorIds);
   return posted;
 }
 
@@ -1045,7 +1198,8 @@ io.on('connection', (socket) => {
 
     const orderId = `${socket.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     room.orderBook[side === 'bid' ? 'bids' : 'asks'].push({ id: orderId, socketId: socket.id, price, qty, name: p.name });
-    tryMatchOrders(room);
+    // This just-posted order is the aggressor — it crosses at the resting price.
+    tryMatchOrders(room, orderId);
     broadcast(roomId);
   });
 

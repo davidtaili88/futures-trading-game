@@ -719,10 +719,69 @@ function renderContract(game) {
     } else {
       revealBox.classList.add('hidden');
     }
+    renderPnlRecap(game.pnlRecap);
   } else {
     box.classList.add('hidden');
     revealBox.classList.add('hidden');
+    $('pnl-recap').classList.add('hidden');
   }
+}
+
+// End-game PnL recap: one card per player with a per-round table of PnL earned by
+// Making vs Taking, and the Adverse-selection hit (a subset of making). All marked
+// to settlement, so Making + Taking = the player's total trading PnL.
+function renderPnlRecap(recap) {
+  const box = $('pnl-recap');
+  if (!recap || !recap.players || !Object.keys(recap.players).length) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
+  box.classList.remove('hidden');
+  const money = (x) => `${x > 0 ? '+' : ''}${x.toFixed(2)}`;
+  const cls = (x) => x > 0 ? 'pos-pos' : x < 0 ? 'pos-neg' : '';
+  const rounds = recap.rounds;
+
+  // Order players by net trading PnL (best first); put "you" first if present.
+  const names = Object.keys(recap.players).sort((a, b) => recap.players[b].net - recap.players[a].net);
+  const myName = (typeof joinedName === 'string' && joinedName) ? joinedName : null;
+  if (myName) names.sort((a, b) => (a === myName ? -1 : 0) - (b === myName ? -1 : 0));
+
+  const cards = names.map((name) => {
+    const P = recap.players[name];
+    const roundRows = rounds.map((r) => {
+      const R = P.rounds[r] || { making: 0, taking: 0, adverse: 0, net: 0 };
+      return `<tr>
+        <td class="rc-round">R${r}</td>
+        <td class="${cls(R.making)}">${money(R.making)}</td>
+        <td class="${cls(R.taking)}">${money(R.taking)}</td>
+        <td class="${cls(R.adverse)}">${R.adverse < 0 ? money(R.adverse) : '—'}</td>
+        <td class="${cls(R.net)}">${money(R.net)}</td>
+      </tr>`;
+    }).join('');
+    const isMe = name === myName;
+    return `<div class="rc-card${isMe ? ' rc-me' : ''}">
+      <div class="rc-name">${escapeHtml(name)}${isMe ? ' <span class="rc-youtag">YOU</span>' : ''}</div>
+      <table class="rc-table">
+        <thead><tr><th></th><th>Making</th><th>Taking</th><th>Adverse</th><th>Net</th></tr></thead>
+        <tbody>
+          ${roundRows}
+          <tr class="rc-total">
+            <td>Total</td>
+            <td class="${cls(P.making)}">${money(P.making)}</td>
+            <td class="${cls(P.taking)}">${money(P.taking)}</td>
+            <td class="${cls(P.adverse)}">${P.adverse < 0 ? money(P.adverse) : '—'}</td>
+            <td class="${cls(P.net)}">${money(P.net)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>`;
+  }).join('');
+
+  box.innerHTML = `
+    <div class="rc-label">PnL breakdown — Making vs Taking (marked to settlement)</div>
+    <div class="rc-note">Making = your resting orders getting hit · Taking = your aggressive fills · Adverse = making PnL lost to better-informed takers</div>
+    <div class="rc-cards">${cards}</div>`;
 }
 
 function renderPlayers(players) {
@@ -762,7 +821,9 @@ function renderTape(trades) {
   tape.innerHTML = '';
   for (const t of [...trades].reverse()) {
     const row = document.createElement('div');
-    row.className = 'tape-row';
+    // Adverse fills (flagged at settlement): the resting maker was picked off by a
+    // better-informed taker, for a big loss vs settlement. Highlighted blue.
+    row.className = 'tape-row' + (t.adverse ? ' tape-adverse' : '');
     if (t.mmRound) {
       // MM trade: one taker, recorded with side. `forced` = auto-trade for an idle taker.
       const forcedTag = t.forced ? ' <span class="forced-tag">AUTO</span>' : '';
@@ -781,9 +842,10 @@ function renderTape(trades) {
       } else {
         detail = `<span class="buy">${escapeHtml(t.buyer)} bought</span> from <span class="sell">${escapeHtml(t.seller)}</span>`;
       }
+      const adverseTag = t.adverse ? ' <span class="adverse-tag">ADVERSE</span>' : '';
       row.innerHTML = `
         <span class="buy">${t.qty} @ ${t.price}</span>
-        <span class="tt">${detail} · R${t.round}</span>
+        <span class="tt">${detail} · R${t.round}${adverseTag}</span>
       `;
     }
     tape.appendChild(row);
@@ -806,17 +868,26 @@ function renderOrderBook(orderBook) {
       const isMe = order.socketId === myId;
       const row = document.createElement('div');
       row.className = 'ob-row' + (isMe ? ' ob-mine' : '');
-      const action = isMe
-        ? `<button class="ob-cancel-btn" data-order-id="${order.id}">Cancel</button>`
-        : side === 'bid'
+      // For your own orders, the Cancel button sits in the name column (you don't
+      // need to see your own name); for others', the name leads and a take button
+      // (SELL/BUY) trails.
+      if (isMe) {
+        row.innerHTML = `
+          <button class="ob-cancel-btn ob-name" data-order-id="${order.id}">Cancel</button>
+          <span class="ob-qty">${order.qty}</span>
+          <span class="ob-price">@ ${order.price}</span>
+        `;
+      } else {
+        const takeBtn = side === 'bid'
           ? `<button class="ob-take-btn ob-sell-btn" data-side="bid" data-order-id="${order.id}">SELL</button>`
           : `<button class="ob-take-btn ob-buy-btn" data-side="ask" data-order-id="${order.id}">BUY</button>`;
-      row.innerHTML = `
-        <span class="ob-name">${escapeHtml(order.name)}</span>
-        <span class="ob-qty">${order.qty}</span>
-        <span class="ob-price">@ ${order.price}</span>
-        ${action}
-      `;
+        row.innerHTML = `
+          <span class="ob-name">${escapeHtml(order.name)}</span>
+          <span class="ob-qty">${order.qty}</span>
+          <span class="ob-price">@ ${order.price}</span>
+          ${takeBtn}
+        `;
+      }
       el.appendChild(row);
     }
   }
