@@ -749,6 +749,17 @@ function renderPnlRecap(recap) {
 
   // One card per round; rows are players. A trailing "All rounds" card shows each
   // player's totals across the game.
+  // "−4.20 by Bot-3" — the adverse cell, annotated with who picked the maker off
+  // (largest loss first). Falls back to just the number if attribution is missing.
+  const adverseCell = (V) => {
+    if (!(V.adverse < 0)) return '—';
+    const by = V.adverseBy || {};
+    const takers = Object.keys(by).sort((a, b) => by[a] - by[b]); // most-negative first
+    const who = takers.length
+      ? `<span class="rc-adv-by">by ${takers.map((t) => escapeHtml(t)).join(', ')}</span>`
+      : '';
+    return `${money(V.adverse)}${who ? '<br>' + who : ''}`;
+  };
   const roundCard = (label, valueFor) => {
     const playerRows = names.map((name) => {
       const V = valueFor(name);
@@ -757,7 +768,7 @@ function renderPnlRecap(recap) {
         <td class="rc-round">${escapeHtml(name)}${isMe ? ' <span class="rc-youtag">YOU</span>' : ''}</td>
         <td class="${cls(V.making)}">${money(V.making)}</td>
         <td class="${cls(V.taking)}">${money(V.taking)}</td>
-        <td class="${cls(V.adverse)}">${V.adverse < 0 ? money(V.adverse) : '—'}</td>
+        <td class="${cls(V.adverse)}">${adverseCell(V)}</td>
         <td class="${cls(V.net)}">${money(V.net)}</td>
       </tr>`;
     }).join('');
@@ -771,7 +782,7 @@ function renderPnlRecap(recap) {
   };
 
   const cards = rounds.map((r) =>
-    roundCard(`R${r}`, (name) => recap.players[name].rounds[r] || { making: 0, taking: 0, adverse: 0, net: 0 })
+    roundCard(`R${r}`, (name) => recap.players[name].rounds[r] || { making: 0, taking: 0, adverse: 0, net: 0, adverseBy: {} })
   ).join('') + roundCard('All rounds', (name) => recap.players[name]);
 
   box.innerHTML = `

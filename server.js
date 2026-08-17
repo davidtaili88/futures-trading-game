@@ -3,7 +3,7 @@ import http from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { newGame, revealedForRound, normalizeSettings, defaultSettings, assetClassInfo, contractInfo, drawPrivateAssets, computeSettlement, stripHintForClient, rollHintByTier, estimateFair, probPositionWins, seriesDecidedRound } from './game.js';
+import { newGame, revealedForRound, normalizeSettings, defaultSettings, assetClassInfo, contractInfo, drawPrivateAssets, computeSettlement, stripHintForClient, rollHintByTier, estimateFair, seriesDecidedRound } from './game.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -564,11 +564,11 @@ function forceIdleTakers(room) {
 }
 
 // ---- Adverse-selection detection (computed once at settlement) ----
-// A fill is adverse when the TAKER's position was a near-lock given what they
-// knew at the time: conditioning a Monte Carlo on the taker's hint + private
-// cards + the community revealed by that round, the side they took had at least
-// this probability of settling in the money.
-const ADVERSE_WIN_PROB = 0.90;
+// A fill is adverse when a smart bot holding the TAKER's information would itself
+// have taken that trade at that price: conditioning estimateFair on the taker's
+// hint + private cards + the community revealed by that round, the taker's fair
+// beats the fill price by more than the bots' own take-edge threshold (the same
+// `edge` used in botOpenOutcryAction). "They thought it was a high-chance trade."
 const ADVERSE_SIMS = 2000;
 
 // What a player (human or bot) could see AS OF a given round: community assets
@@ -592,22 +592,23 @@ function playerKnownStateAtRound(room, name, round) {
   return { revealedValues, ownPrivateValues, hiddenCommunityCount, otherPrivateCount, hint };
 }
 
-// Stamp each open-outcry trade with `adverse: true` when the resting (maker) was
-// picked off by a taker whose information made the trade a near-lock: conditioning
-// a Monte Carlo on the TAKER's known state as of the fill's round, the side the
-// taker took had ≥ ADVERSE_WIN_PROB chance of settling in the money.
+// Stamp each open-outcry trade with `adverse: true` when a smart bot holding the
+// taker's information would itself have taken it: the taker's conditioned fair (as
+// of the fill's round) beats the fill price by more than the bots' take-edge — the
+// SAME rule botOpenOutcryAction trades on (edge = max(minEdge, BOT_OO_EDGE_K·stdev)).
+// Also stores t.adverseEdge (how far past the threshold, in price) for the tape.
 function markAdverseFills(room) {
+  const minEdge = priceScale(room).minEdge;
   for (const t of room.trades) {
     // Only open-outcry trades carry a maker/taker with a takerSide.
     if (!t.taker || !t.maker || !t.takerSide) continue;
     const known = playerKnownStateAtRound(room, t.taker, t.round);
-    const p = probPositionWins(room.game, {
-      bought: t.takerSide === 'bought',
-      price: t.price,
-      ...known,
-      sims: ADVERSE_SIMS,
-    });
-    if (p >= ADVERSE_WIN_PROB) t.adverse = true;
+    const est = estimateFair(room.game, { ...known, sims: ADVERSE_SIMS });
+    // Favorable gap: how far the taker's fair sits beyond the price on their side.
+    const gap = t.takerSide === 'bought' ? est.fair - t.price : t.price - est.fair;
+    const edge = Math.max(minEdge, BOT_OO_EDGE_K * est.stdev);
+    t.adverseEdge = Math.round((gap - edge) * 100) / 100; // >0 ⇒ a bot would take it
+    if (gap > edge) t.adverse = true;
   }
 }
 
@@ -629,8 +630,8 @@ function buildPnlRecap(room) {
   const byPlayer = {}; // name -> { rounds: { r: {making,taking,adverse} }, totals: {...} }
 
   const ensure = (name, r) => {
-    const p = byPlayer[name] ?? (byPlayer[name] = { rounds: {}, making: 0, taking: 0, adverse: 0, net: 0 });
-    return p.rounds[r] ?? (p.rounds[r] = { making: 0, taking: 0, adverse: 0, net: 0 });
+    const p = byPlayer[name] ?? (byPlayer[name] = { rounds: {}, making: 0, taking: 0, adverse: 0, net: 0, adverseBy: {} });
+    return p.rounds[r] ?? (p.rounds[r] = { making: 0, taking: 0, adverse: 0, net: 0, adverseBy: {} });
   };
 
   for (const t of room.trades) {
@@ -653,20 +654,26 @@ function buildPnlRecap(room) {
     if (t.adverse) {
       mk.adverse += makerP;              // makerP is negative on adverse fills
       byPlayer[t.maker].adverse += makerP;
+      // Attribute the loss to the taker who picked the maker off, per round and total.
+      mk.adverseBy[t.taker] = (mk.adverseBy[t.taker] ?? 0) + makerP;
+      byPlayer[t.maker].adverseBy[t.taker] = (byPlayer[t.maker].adverseBy[t.taker] ?? 0) + makerP;
     }
   }
 
   // Round to cents for display.
   const round2c = (x) => Math.round(x * 100) / 100;
+  const round2cMap = (m) => { for (const k of Object.keys(m)) m[k] = round2c(m[k]); return m; };
   for (const name of Object.keys(byPlayer)) {
     const P = byPlayer[name];
     for (const r of Object.keys(P.rounds)) {
       const R = P.rounds[r];
       R.making = round2c(R.making); R.taking = round2c(R.taking);
       R.adverse = round2c(R.adverse); R.net = round2c(R.net);
+      round2cMap(R.adverseBy);
     }
     P.making = round2c(P.making); P.taking = round2c(P.taking);
     P.adverse = round2c(P.adverse); P.net = round2c(P.net);
+    round2cMap(P.adverseBy);
   }
 
   return {
