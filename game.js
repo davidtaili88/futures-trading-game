@@ -594,6 +594,53 @@ export function estimateFair(game, {
   return { fair: mean, stdev: Math.sqrt(variance) };
 }
 
+// Probability that a position (buy or sell at `price`) settles in the money,
+// estimated by the SAME conditioned Monte Carlo as estimateFair. `bought=true`
+// wins when settlement > price; selling wins when settlement < price. Ties (==)
+// don't count as winning. Conditions on the same known state (revealed community,
+// own privates, hidden count, other privates, and hint via rejection sampling),
+// so this reflects what a player holding `hint` could infer. Returns a fraction
+// in [0,1]. Used at settlement to decide whether a taker's pickoff was a near-lock.
+export function probPositionWins(game, {
+  bought,
+  price,
+  revealedValues = [],
+  ownPrivateValues = [],
+  hiddenCommunityCount = 0,
+  otherPrivateCount = 0,
+  hint = null,
+  sims = 2000,
+} = {}) {
+  const cls = ASSET_CLASSES[game.contract.assetClass];
+  const contract = CONTRACTS.find((c) => c.id === game.contract.id);
+  const hidden = Math.max(0, hiddenCommunityCount);
+  const others = Math.max(0, otherPrivateCount);
+  const useHint = hint && hintIsEvaluable(hint);
+  const maxAttemptsPerSim = 200;
+  const opts = classOpts(game.settings);
+
+  let wins = 0;
+  const n = Math.max(1, sims);
+  for (let i = 0; i < n; i++) {
+    let hiddenVals;
+    if (useHint) {
+      let ok = false;
+      for (let a = 0; a < maxAttemptsPerSim; a++) {
+        hiddenVals = Array.from({ length: hidden }, () => cls.sampleValue(opts));
+        if (hintMatches(hint, revealedValues.concat(hiddenVals))) { ok = true; break; }
+      }
+      if (!ok) hiddenVals = Array.from({ length: hidden }, () => cls.sampleValue(opts));
+    } else {
+      hiddenVals = Array.from({ length: hidden }, () => cls.sampleValue(opts));
+    }
+    const vals = revealedValues.concat(hiddenVals, ownPrivateValues);
+    for (let u = 0; u < others; u++) vals.push(cls.sampleValue(opts));
+    const s = contract.settle(vals, game.contract.params ?? {});
+    if (bought ? s > price : s < price) wins++;
+  }
+  return wins / n;
+}
+
 // Can this hint be re-evaluated on a candidate community set? (All current hint
 // keys can; guards future/unknown keys so they're simply ignored, not crashed on.)
 function hintIsEvaluable(hint) {

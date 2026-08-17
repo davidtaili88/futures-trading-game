@@ -3,7 +3,7 @@ import http from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { newGame, revealedForRound, normalizeSettings, defaultSettings, assetClassInfo, contractInfo, drawPrivateAssets, computeSettlement, stripHintForClient, rollHintByTier, estimateFair, seriesDecidedRound } from './game.js';
+import { newGame, revealedForRound, normalizeSettings, defaultSettings, assetClassInfo, contractInfo, drawPrivateAssets, computeSettlement, stripHintForClient, rollHintByTier, estimateFair, probPositionWins, seriesDecidedRound } from './game.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -564,54 +564,50 @@ function forceIdleTakers(room) {
 }
 
 // ---- Adverse-selection detection (computed once at settlement) ----
-const HINT_TIER_RANK = { good: 2, medium: 1, bad: 0 };
-// Fraction of the contract's natural scale a fill must miss settlement by to
-// count as a "large" adverse fill. Bump this to require bigger pickoffs.
-const ADVERSE_MISS_FRAC = 0.25;
+// A fill is adverse when the TAKER's position was a near-lock given what they
+// knew at the time: conditioning a Monte Carlo on the taker's hint + private
+// cards + the community revealed by that round, the side they took had at least
+// this probability of settling in the money.
+const ADVERSE_WIN_PROB = 0.90;
+const ADVERSE_SIMS = 2000;
 
-// The hint tier rank a player held this game (2 good / 1 medium / 0 bad), or -1
-// if they held no hint. Looks up the player's hintKey → the hint card's tier
-// (tier is server-only, retained on room.game.hintCards).
-function hintTierRank(room, name) {
-  // hintKey is set on the live player entry (room.players, keyed by socketId) for
-  // every player — human and bot — at game start; find by name. (playersByName's
-  // hintKey isn't reliably synced, so don't use it here.)
+// What a player (human or bot) could see AS OF a given round: community assets
+// revealed by that round, their own private cards, the hidden community count for
+// that round, other players' unseen private count, and their hint. Mirrors
+// botKnownState but is round-aware (uses `round`, not the current game round) so
+// adverse checks reflect the information available when the fill happened.
+function playerKnownStateAtRound(room, name, round) {
   const player = Object.values(room.players).find((p) => p.name === name);
-  const key = player?.hintKey;
-  if (!key) return -1;
-  const card = room.game.hintCards.find((c) => c.key === key);
-  return card ? (HINT_TIER_RANK[card.tier] ?? -1) : -1;
+  const total = room.game.assets.length;
+  const revealedCount = Math.min(Math.max(0, round), total);
+  const revealedValues = room.game.assets.slice(0, revealedCount).map((a) => a.value);
+  const ownPrivateValues = (player?.privateAssets ?? []).map((a) => a.value);
+  const hiddenCommunityCount = total - revealedCount;
+  const privateN = room.settings.privatePerPlayer || 0;
+  const otherPlayers = Object.values(room.players).length - 1;
+  const otherPrivateCount = Math.max(0, otherPlayers) * privateN;
+  const hint = player?.hintKey
+    ? room.game.hintCards.find((c) => c.key === player.hintKey) ?? null
+    : null;
+  return { revealedValues, ownPrivateValues, hiddenCommunityCount, otherPrivateCount, hint };
 }
 
-// The contract's naive scale: unconditioned MC mean/stdev with nothing revealed.
-// Uses max(|mean|, stdev) so contracts whose mean is ~0 or negative (Odds−Evens)
-// still get a meaningful positive scale. Cached on the game.
-function naiveScale(room) {
-  if (room.game._naiveScale != null) return room.game._naiveScale;
-  const est = estimateFair(room.game, { hiddenCommunityCount: room.game.assets.length, sims: 2000 });
-  const scale = Math.max(Math.abs(est.fair), est.stdev, 1e-6);
-  room.game._naiveScale = scale;
-  return scale;
-}
-
-// Stamp each open-outcry trade with `adverse: true` when the resting (maker) side
-// was picked off by a better-informed taker: (1) the taker held a strictly better
-// hint tier than the maker, (2) the fill went against the maker vs the final
-// settlement (they sold below / bought above it), and (3) the miss is large —
-// |price − settlement| ≥ ADVERSE_MISS_FRAC × the contract's naive scale.
+// Stamp each open-outcry trade with `adverse: true` when the resting (maker) was
+// picked off by a taker whose information made the trade a near-lock: conditioning
+// a Monte Carlo on the TAKER's known state as of the fill's round, the side the
+// taker took had ≥ ADVERSE_WIN_PROB chance of settling in the money.
 function markAdverseFills(room) {
-  const s = room.game.settlement;
-  const threshold = ADVERSE_MISS_FRAC * naiveScale(room);
   for (const t of room.trades) {
     // Only open-outcry trades carry a maker/taker with a takerSide.
     if (!t.taker || !t.maker || !t.takerSide) continue;
-    const takerBetter = hintTierRank(room, t.taker) > hintTierRank(room, t.maker);
-    if (!takerBetter) continue;
-    // takerSide 'bought' ⇒ maker SOLD (ask lifted): adverse if settlement > price.
-    // takerSide 'sold'   ⇒ maker BOUGHT (bid hit):  adverse if settlement < price.
-    const makerLost = t.takerSide === 'bought' ? s > t.price : s < t.price;
-    const bigMiss = Math.abs(t.price - s) >= threshold;
-    if (makerLost && bigMiss) t.adverse = true;
+    const known = playerKnownStateAtRound(room, t.taker, t.round);
+    const p = probPositionWins(room.game, {
+      bought: t.takerSide === 'bought',
+      price: t.price,
+      ...known,
+      sims: ADVERSE_SIMS,
+    });
+    if (p >= ADVERSE_WIN_PROB) t.adverse = true;
   }
 }
 

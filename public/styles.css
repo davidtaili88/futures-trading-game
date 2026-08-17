@@ -236,6 +236,8 @@ main {
 .rc-table th:first-child { text-align: left; }
 .rc-table td { text-align: right; padding: 2px 4px; color: var(--text); }
 .rc-table td.rc-round { text-align: left; color: var(--muted); }
+.rc-table tr.rc-me-row td { color: var(--text); font-weight: 600; }
+.rc-table tr.rc-me-row td.rc-round { color: var(--text); }
 .rc-table tr.rc-total td { border-top: 1px solid var(--border); font-weight: 700; padding-top: 4px; }
 .rc-table tr.rc-total td:first-child { color: var(--muted); }
 

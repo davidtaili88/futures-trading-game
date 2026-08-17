@@ -727,7 +727,7 @@ function renderContract(game) {
   }
 }
 
-// End-game PnL recap: one card per player with a per-round table of PnL earned by
+// End-game PnL recap: one card per round with a per-player table of PnL earned by
 // Making vs Taking, and the Adverse-selection hit (a subset of making). All marked
 // to settlement, so Making + Taking = the player's total trading PnL.
 function renderPnlRecap(recap) {
@@ -747,40 +747,36 @@ function renderPnlRecap(recap) {
   const myName = (typeof joinedName === 'string' && joinedName) ? joinedName : null;
   if (myName) names.sort((a, b) => (a === myName ? -1 : 0) - (b === myName ? -1 : 0));
 
-  const cards = names.map((name) => {
-    const P = recap.players[name];
-    const roundRows = rounds.map((r) => {
-      const R = P.rounds[r] || { making: 0, taking: 0, adverse: 0, net: 0 };
-      return `<tr>
-        <td class="rc-round">R${r}</td>
-        <td class="${cls(R.making)}">${money(R.making)}</td>
-        <td class="${cls(R.taking)}">${money(R.taking)}</td>
-        <td class="${cls(R.adverse)}">${R.adverse < 0 ? money(R.adverse) : '—'}</td>
-        <td class="${cls(R.net)}">${money(R.net)}</td>
+  // One card per round; rows are players. A trailing "All rounds" card shows each
+  // player's totals across the game.
+  const roundCard = (label, valueFor) => {
+    const playerRows = names.map((name) => {
+      const V = valueFor(name);
+      const isMe = name === myName;
+      return `<tr class="${isMe ? 'rc-me-row' : ''}">
+        <td class="rc-round">${escapeHtml(name)}${isMe ? ' <span class="rc-youtag">YOU</span>' : ''}</td>
+        <td class="${cls(V.making)}">${money(V.making)}</td>
+        <td class="${cls(V.taking)}">${money(V.taking)}</td>
+        <td class="${cls(V.adverse)}">${V.adverse < 0 ? money(V.adverse) : '—'}</td>
+        <td class="${cls(V.net)}">${money(V.net)}</td>
       </tr>`;
     }).join('');
-    const isMe = name === myName;
-    return `<div class="rc-card${isMe ? ' rc-me' : ''}">
-      <div class="rc-name">${escapeHtml(name)}${isMe ? ' <span class="rc-youtag">YOU</span>' : ''}</div>
+    return `<div class="rc-card">
+      <div class="rc-name">${label}</div>
       <table class="rc-table">
         <thead><tr><th></th><th>Making</th><th>Taking</th><th>Adverse</th><th>Net</th></tr></thead>
-        <tbody>
-          ${roundRows}
-          <tr class="rc-total">
-            <td>Total</td>
-            <td class="${cls(P.making)}">${money(P.making)}</td>
-            <td class="${cls(P.taking)}">${money(P.taking)}</td>
-            <td class="${cls(P.adverse)}">${P.adverse < 0 ? money(P.adverse) : '—'}</td>
-            <td class="${cls(P.net)}">${money(P.net)}</td>
-          </tr>
-        </tbody>
+        <tbody>${playerRows}</tbody>
       </table>
     </div>`;
-  }).join('');
+  };
+
+  const cards = rounds.map((r) =>
+    roundCard(`R${r}`, (name) => recap.players[name].rounds[r] || { making: 0, taking: 0, adverse: 0, net: 0 })
+  ).join('') + roundCard('All rounds', (name) => recap.players[name]);
 
   box.innerHTML = `
     <div class="rc-label">PnL breakdown — Making vs Taking (marked to settlement)</div>
-    <div class="rc-note">Making = your resting orders getting hit · Taking = your aggressive fills · Adverse = making PnL lost to better-informed takers</div>
+    <div class="rc-note">Making = your resting orders getting hit · Taking = your aggressive fills · Adverse = making PnL lost when the taker's position was a near-lock (≥90%) on their info</div>
     <div class="rc-cards">${cards}</div>`;
 }
 
