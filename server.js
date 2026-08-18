@@ -132,6 +132,15 @@ const BOT_OO_TAKE_LOT = 3;       // max lot a bot lifts/hits in one take (1..N)
 // so a price AT fair is left alone — "don't trade if it thinks it's fair".
 const BOT_OO_EDGE_K = 0.15;      // take if |fair − price| > K * stdev …
 const BOT_OO_EDGE_MIN = 0.4;     // … but always require at least this much edge
+// Open-outcry pacing (non-MM). Bots move the market deliberately, not instantly:
+// they re-evaluate roughly once a second when the book is quiet (tightening on
+// their own), pause briefly after any trade so the human can see what happened,
+// and hold off entirely at the very start of a round so the human can work out a
+// fair before liquidity appears.
+const BOT_OO_TICK_MIN_MS = 800;      // idle re-quote cadence lower bound (~1s)
+const BOT_OO_TICK_MAX_MS = 1200;     // idle re-quote cadence upper bound (~1s)
+const BOT_OO_POST_TRADE_MS = 1500;   // pause after any trade before bots act again
+const BOT_OO_ROUND_START_MS = 10000; // grace at round start for the human to price
 
 function isBot(player) {
   return !!(player && player.isBot);
@@ -503,6 +512,9 @@ function recordTrade(room, ...playerNames) {
     room.tradeCount[name] = (room.tradeCount[name] ?? 0) + 1;
     room.roundTradeCount[name] = (room.roundTradeCount[name] ?? 0) + 1;
   }
+  // Whenever anyone trades, hold the open-outcry bots off for a beat so a human
+  // can see the fill react before the bots re-price against it.
+  room.botHoldUntil = Math.max(room.botHoldUntil ?? 0, Date.now() + BOT_OO_POST_TRADE_MS);
 }
 
 // Execute a taker trade against the current maker's quote (MM mode). `side` is
@@ -1043,6 +1055,11 @@ function scheduleOpenOutcryBots(roomId) {
   const room = rooms[roomId];
   if (!room || room.settings.marketMaking || isClosed(room)) return;
   const roundAtSchedule = room.game.round;
+  // Give the human a grace period at the start of the round to work out a fair
+  // before any bot posts or takes. Trades later push this out by BOT_OO_POST_TRADE_MS.
+  room.botHoldUntil = Date.now() + BOT_OO_ROUND_START_MS;
+  // Idle re-evaluation cadence: ~1s so the market tightens deliberately, not instantly.
+  const idleDelay = () => BOT_OO_TICK_MIN_MS + Math.random() * (BOT_OO_TICK_MAX_MS - BOT_OO_TICK_MIN_MS);
   for (const [id, p] of Object.entries(room.players)) {
     if (!isBot(p)) continue;
     const tick = () => {
@@ -1051,10 +1068,13 @@ function scheduleOpenOutcryBots(roomId) {
         if (!r || r.settings.marketMaking || isClosed(r)) return;
         if (r.game.round !== roundAtSchedule) return;   // stale round — stop looping
         if (!r.players[id]) return;                     // bot removed
+        // Respect the hold window (round-start grace, or the pause after a trade).
+        // While held, come back shortly to check again rather than acting.
+        if (Date.now() < (r.botHoldUntil ?? 0)) { tick(); return; }
         botOpenOutcryAction(r, id);
         broadcast(roomId);
         tick(); // keep going until the round changes or the game closes
-      }, botDelay());
+      }, idleDelay());
     };
     tick();
   }
