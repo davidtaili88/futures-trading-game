@@ -176,12 +176,48 @@ main {
 }
 .asset.poisson .av { font-size: 26px; }
 .asset.poisson .as { color: var(--accent); opacity: 0.8; }
+.asset.abstract {
+  background: linear-gradient(135deg, #3a2440, #2a1830);
+  color: var(--gold); border: 1px solid var(--gold);
+  font-size: 24px;
+}
+.asset.abstract .as { color: var(--gold); opacity: 0.75; }
 .asset .av { font-size: 20px; }
 .asset .as { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .trial-tally { flex-basis: 100%; margin-top: 8px; font-size: 13px; color: var(--muted); }
 .trial-tally .t-succ { color: var(--green); font-weight: 700; }
 .trial-tally .t-fail { color: var(--red); font-weight: 700; }
 @keyframes flip { from { transform: rotateY(90deg); opacity: 0; } to { transform: rotateY(0); opacity: 1; } }
+
+/* ---------- Abstract distribution panel ---------- */
+.dist-panel {
+  margin: 12px 0; padding: 12px; text-align: left;
+  background: var(--panel2); border: 1px solid var(--gold); border-radius: 8px;
+}
+.dist-head {
+  font-size: 12px; color: var(--muted); letter-spacing: 0.4px;
+  display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  flex-wrap: wrap; margin-bottom: 10px;
+}
+.dist-mean { color: var(--gold); font-weight: 700; font-size: 13px; }
+.dist-grid {
+  display: flex; align-items: flex-end; gap: 6px;
+  overflow-x: auto; padding-bottom: 4px;
+}
+.dist-cell {
+  flex: 1 0 auto; min-width: 28px;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+}
+.dist-cell .dist-v { font-size: 13px; font-weight: 700; color: var(--text); }
+.dist-cell .dist-p { font-size: 10px; color: var(--muted); }
+.dist-bar {
+  width: 100%; height: 56px; display: flex; align-items: flex-end;
+  background: rgba(255,255,255,0.04); border-radius: 3px; overflow: hidden;
+}
+.dist-fill { width: 100%; background: var(--gold); opacity: 0.55; border-radius: 3px 3px 0 0; }
+.dist-cell.dist-top .dist-fill { opacity: 0.95; }
+.dist-cell.dist-top .dist-v { color: var(--gold); }
+.dist-note { font-size: 11px; color: var(--muted); margin-top: 8px; }
 
 .settlement-box {
   margin-top: 18px; padding: 16px; text-align: center;

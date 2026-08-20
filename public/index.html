@@ -102,6 +102,14 @@
       </select>
       <p class="hint-text">All order and quote prices snap to a multiple of this. 0.01 is the finest.</p>
 
+      <div class="toggle-row">
+        <input type="checkbox" id="abstract-mode" />
+        <label for="abstract-mode" class="toggle-label">
+          <span class="toggle-title">Abstract underlying</span>
+          <span class="toggle-desc">Replace the chosen asset class with wacky abstract integers drawn from a random, deliberately non-uniform distribution (values 1–20). The value→probability table and single-asset mean are shown, so the fair is easy to compute. Works with every mode.</span>
+        </label>
+      </div>
+
       <label class="field-label">Game mode</label>
       <div class="toggle-row">
         <input type="checkbox" id="mm-mode" />
@@ -109,6 +117,28 @@
           <span class="toggle-title">Market Making Mode</span>
           <span class="toggle-desc">Before each round, players bid a spread margin. The tightest quote wins the right to make the market — all others trade at their bid/ask.</span>
         </label>
+      </div>
+
+      <div class="toggle-row">
+        <input type="checkbox" id="solo-mode" />
+        <label for="solo-mode" class="toggle-label">
+          <span class="toggle-title">Single-player market making</span>
+          <span class="toggle-desc">You are the permanent market maker; one bot is forced to trade against you every round. You quote a fixed-width market (below) and manage getting picked off. Turning this on forces market-making with exactly one bot and a ±10 position cap.</span>
+        </label>
+      </div>
+
+      <div id="solo-settings" class="hidden">
+        <label class="field-label" for="spread-width">
+          Your market width (N): <b id="spread-width-val">1.00</b>
+        </label>
+        <input id="spread-width" type="range" min="0.1" max="10" step="0.1" value="1" />
+        <p class="hint-text">Every round your quote must be exactly this wide (ask − bid = N). You choose only where to center it.</p>
+
+        <label class="field-label" for="bot-min-size">
+          Bot minimum size: <b id="bot-min-size-val">1</b>
+        </label>
+        <input id="bot-min-size" type="range" min="1" max="10" step="1" value="1" />
+        <p class="hint-text">The bot must trade at least this many lots against you each round, even when it sees no edge. It trades MORE (up to ±10) when your quote is mispriced — that's the adverse selection you're managing.</p>
       </div>
 
       <div id="num-bots-row">
@@ -202,6 +232,8 @@
       <div id="contract-name" class="contract-name">—</div>
       <div id="contract-desc" class="contract-desc"></div>
 
+      <div id="dist-panel" class="dist-panel hidden"></div>
+
       <div id="hints" class="hints hints-inline"></div>
 
       <div class="round-status">
@@ -216,6 +248,7 @@
         <div class="settlement-label">FINAL SETTLEMENT</div>
         <div id="settlement-value" class="settlement-value">—</div>
         <div id="private-reveal" class="private-reveal hidden"></div>
+        <div id="bot-hint-reveal" class="private-reveal hidden"></div>
         <div id="pnl-recap" class="pnl-recap hidden"></div>
       </div>
     </section>

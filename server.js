@@ -241,6 +241,12 @@ function botQuote(room, est, margin) {
   return { bid, ask: round2(bid + margin) };
 }
 
+// Conviction sizing (solo mode): how many lots a bot wants on `edgeAmt` of edge,
+// scaled by its uncertainty. One "stdev of edge" ≈ SOLO_CONVICTION_LOTS lots, so a
+// clear mispricing draws size and a marginal one draws little. Clamped to the cap
+// by the caller; floored at botMinSize when the bot is required to trade.
+const SOLO_CONVICTION_LOTS = 6; // lots per 1·stdev of edge (before the cap)
+
 // Bot taker decision vs a maker's quote. Returns { side, qty } or null.
 // Buys if the ask is well below fair; sells if the bid is well above fair;
 // the "well" threshold scales with the bot's own uncertainty so it won't get
@@ -248,33 +254,54 @@ function botQuote(room, est, margin) {
 //
 // Every non-maker MUST trade at least once per round. When `requireMinimum` is
 // true (the bot's first evaluation and it hasn't traded yet), a bot with no
-// clear edge still trades 1 lot on the LESS-BAD side (the side of the quote
-// closer to its fair estimate) — a deliberate decision, not a random fill.
+// clear edge still trades on the LESS-BAD side (the side of the quote closer to
+// its fair estimate) — a deliberate decision, not a random fill.
+//
+// SOLO MODE (room.settings.soloMM): the single bot is the forced taker. It is
+// CONVICTION-SIZED and SIGNAL-DIRECTED — it takes the side its fair favors, sized
+// by how far the quote sits from fair (in stdevs), up to the position cap of 10,
+// and always AT LEAST botMinSize when required to trade. This is what produces
+// adverse selection against the human maker: a big mispricing gets run over for
+// size; a fair quote only draws the forced minimum.
 function botTakeDecision(room, botPlayer, est, requireMinimum = false) {
   if (!room.mm || room.mm.phase !== 'trading') return null;
   if (!withinRoundTradeLimit(room, botPlayer.name)) return null;
+  const solo = !!room.settings.soloMM;
   const edge = BOT_TAKE_EDGE_K * est.stdev;
   const { bid, ask } = room.mm;
+  const cap = positionLimit(room);
+  const minSize = solo ? (room.settings.botMinSize ?? 1) : 1;
 
   let side = null;
-  let maxQty = 4;
+  let maxQty = solo ? cap : 4; // solo bot may size all the way to the cap on edge
   if (est.fair - ask > edge) side = 'buy';
   else if (bid - est.fair > edge) side = 'sell';
   else if (requireMinimum) {
-    // No edge, but must trade ≥1: pick the less-bad side. Buying costs (ask-fair);
-    // selling costs (fair-bid). Take the cheaper mistake; trade only 1 lot.
+    // No clear edge, but must trade: pick the less-bad side. Buying costs
+    // (ask-fair); selling costs (fair-bid). Take the cheaper mistake. In solo
+    // mode the bot must still trade its configured minimum here.
     side = (ask - est.fair) <= (est.fair - bid) ? 'buy' : 'sell';
-    maxQty = 1;
+    maxQty = minSize;
   }
   if (!side) return null;
 
-  // Size: small lot, clamped so |net ± qty| stays within the round net limit.
+  // Desired size. In solo mode, scale with conviction: lots ≈ (edge past the
+  // take threshold, in stdevs) · SOLO_CONVICTION_LOTS, floored at botMinSize when
+  // required. Otherwise the classic small lot.
+  let want = maxQty;
+  if (solo) {
+    const stdev = Math.max(1e-6, est.stdev);
+    const favorable = side === 'buy' ? (est.fair - ask) : (bid - est.fair); // ≥ edge here (or forced)
+    const convictionLots = Math.round((favorable / stdev) * SOLO_CONVICTION_LOTS);
+    want = Math.max(requireMinimum ? minSize : 1, Math.min(cap, Math.max(minSize, convictionLots)));
+  }
+
+  // Clamp so |net ± qty| stays within the round net limit (the position cap).
   const net = roundNet(room, botPlayer.name);
   const dir = side === 'buy' ? 1 : -1;
-  const cap = positionLimit(room);
   // Largest q with |net + dir*q| ≤ cap: buy caps at cap - net, sell at cap + net.
   const headroom = dir > 0 ? cap - net : cap + net;
-  const qty = Math.max(0, Math.min(maxQty, headroom));
+  const qty = Math.max(0, Math.min(want, headroom));
   if (qty <= 0) return null;
   return { side, qty };
 }
@@ -363,15 +390,29 @@ function publicGameState(room) {
     settled: closed,
     settlement: closed ? room.game.settlement : null,
     marketMaking: room.settings.marketMaking || false,
+    soloMM: room.settings.soloMM || false,
+    spreadWidth: room.settings.spreadWidth ?? 1,
+    botMinSize: room.settings.botMinSize ?? 1,
     positionLimit: room.settings.positionLimit ?? 10,
     tickSize: room.settings.tickSize ?? 0.01,
     privatePerPlayer: room.settings.privatePerPlayer || 0,
+    // Abstract underlying: expose the wacky per-game distribution (value→prob
+    // table + single-asset mean) so the client can show it — the fair is meant to
+    // be easy to compute from this. null for every non-abstract game.
+    abstractMode: room.settings.abstractMode || false,
+    abstractDist: room.game.contract.assetClass === 'abstract'
+      ? room.game.contract.params?.dist ?? null
+      : null,
     // On close, reveal every player's private (hole) cards so settlement is auditable.
     privateReveal: closed && (room.settings.privatePerPlayer || 0) > 0
       ? Object.values(room.players)
           .filter((p) => (p.privateAssets?.length ?? 0) > 0)
           .map((p) => ({ name: p.name, assets: p.privateAssets }))
       : null,
+    // On close, reveal which hint each BOT held (label + value, tier stripped) so
+    // players can see what the bot(s) were pricing off. null when not closed or no
+    // bot held a hint.
+    botHintReveal: closed ? buildBotHintReveal(room) : null,
     // End-game recap: per-player, per-round making/taking/adverse PnL breakdown.
     pnlRecap: closed ? buildPnlRecap(room) : null,
   };
@@ -426,6 +467,15 @@ function startGame(roomId, rawSettings) {
   room.settings.roundDuration = Number.isFinite(rd) && rd >= 0 ? Math.min(rd, 300) : 0;
   const pl = parseInt(rawSettings.positionLimit, 10);
   room.settings.positionLimit = Number.isFinite(pl) && pl > 0 ? Math.min(pl, 1000) : 10;
+  // Solo market-making mode: the human is the sole maker, ONE bot is the forced
+  // taker. It implies market-making on with exactly one bot and a position cap of
+  // 10 (both sides). Force those invariants regardless of the other toggles so the
+  // solo tick is self-contained. The maker is never asked to bid (see openBidPhase).
+  if (room.settings.soloMM) {
+    room.settings.marketMaking = true;
+    room.settings.numBots = 1;
+    room.settings.positionLimit = 10;
+  }
   room.game = newGame(room.settings);
   room.trades = [];
   room.tradeCount = {};
@@ -560,17 +610,37 @@ function executeMakerTrade(room, takerId, side, qty, forced = false) {
 }
 
 // Before an MM trading round ends, force any connected non-maker who hasn't
-// traded this round into a default trade (random side, qty 1) against the
-// maker's quote — so every taker must buy or sell something each round.
+// traded this round into a default trade against the maker's quote — so every
+// taker must buy or sell something each round. Normally random side, qty 1.
+//
+// SOLO MODE: the single bot is a forced taker with a configured MINIMUM SIZE. If
+// it somehow reaches round-end without trading (e.g. edge exactly zero and the
+// scheduled attempts all no-op'd), force it to trade botMinSize on the less-bad
+// side of the quote per its estimate — a deliberate minimum, not a coin flip.
 function forceIdleTakers(room) {
   if (!room.mm || room.mm.phase !== 'trading') return;
+  const solo = !!room.settings.soloMM;
   for (const [sid, p] of Object.entries(room.players)) {
     if (!p.connected) continue;
     if (sid === room.mm.makerId) continue;
     if ((room.roundTradeCount[p.name] ?? 0) > 0) continue;
-    const side = Math.random() < 0.5 ? 'buy' : 'sell';
-    if (executeMakerTrade(room, sid, side, 1, true)) {
-      io.to(sid).emit('tradeError', `You didn't trade this round — auto-executed ${side} 1 at the maker's quote.`);
+    let side, qty;
+    if (solo && isBot(p)) {
+      const est = botEstimate(room, p);
+      // Less-bad side: buying costs (ask−fair), selling costs (fair−bid).
+      side = (room.mm.ask - est.fair) <= (est.fair - room.mm.bid) ? 'buy' : 'sell';
+      const cap = positionLimit(room);
+      const dir = side === 'buy' ? 1 : -1;
+      const net = roundNet(room, p.name);
+      const headroom = dir > 0 ? cap - net : cap + net;
+      qty = Math.max(0, Math.min(room.settings.botMinSize ?? 1, headroom));
+      if (qty <= 0) continue;
+    } else {
+      side = Math.random() < 0.5 ? 'buy' : 'sell';
+      qty = 1;
+    }
+    if (executeMakerTrade(room, sid, side, qty, true)) {
+      io.to(sid).emit('tradeError', `You didn't trade this round — auto-executed ${side} ${qty} at the maker's quote.`);
     }
   }
 }
@@ -628,6 +698,22 @@ function markAdverseFills(room) {
 // q*(settlement - p); selling is worth q*(p - settlement).
 function fillPnl(bought, qty, price, settlement) {
   return bought ? qty * (settlement - price) : qty * (price - settlement);
+}
+
+// End-game reveal of every bot's hint: the label + value of the hint card each
+// bot held this game (tier stripped, like a client hint), so players can see what
+// the bot(s) were pricing off. Bots without a hint are shown as holding none.
+// Returns [{ name, hint }] (hint = { key,label,value,... } or null), or null if
+// there are no bots.
+function buildBotHintReveal(room) {
+  const bots = Object.values(room.players).filter((p) => isBot(p));
+  if (!bots.length) return null;
+  return bots.map((p) => {
+    const card = p.hintKey
+      ? room.game.hintCards.find((c) => c.key === p.hintKey) ?? null
+      : null;
+    return { name: p.name, hint: card ? stripHintForClient(card) : null };
+  });
 }
 
 // Build the end-game PnL recap: for each player, a per-round breakdown of PnL
@@ -785,10 +871,35 @@ function tryMatchOrders(room, aggressorIds = null) {
 // Open a bidding phase for the upcoming round.
 function openBidPhase(roomId) {
   const room = rooms[roomId];
+  // Solo market-making: the human maker is not asked to bid — they ARE the maker
+  // every round. Skip the bidding/quoting competition and go straight to the
+  // quoting phase with the host as maker and a fixed N-wide spread (spreadWidth).
+  // The existing setMarket handler derives ask = bid + margin and requires the
+  // spread to equal the margin, so the human's market is automatically N wide.
+  if (room.settings.soloMM) {
+    const makerId = soloMakerId(room);
+    if (!makerId) { room.mm = null; broadcast(roomId); return; } // no human to make
+    const margin = snapToTick(room, room.settings.spreadWidth ?? 1);
+    room.mm = { phase: 'quoting', bids: {}, makerId, margin, bid: null, ask: null };
+    broadcast(roomId);
+    io.to(roomId).emit('bidPhaseResolved', { makerName: room.players[makerId]?.name ?? '—', margin });
+    io.to(makerId).emit('setMarketPrompt', { margin });
+    return;
+  }
   room.mm = { phase: 'bidding', bids: {}, makerId: null, bid: null, ask: null };
   broadcast(roomId);
   io.to(roomId).emit('bidPhaseOpen');
   scheduleBotBids(roomId);
+}
+
+// The human who makes the market in solo mode: the host if they're a connected
+// human, otherwise the first connected human. Bots never make in solo mode.
+function soloMakerId(room) {
+  if (room.hostId && room.players[room.hostId]?.connected && !isBot(room.players[room.hostId])) {
+    return room.hostId;
+  }
+  const human = Object.entries(room.players).find(([, p]) => p.connected && !isBot(p));
+  return human ? human[0] : null;
 }
 
 // Called when all connected players have submitted bids (or host forces close).

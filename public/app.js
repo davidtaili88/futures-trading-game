@@ -55,6 +55,10 @@ socket.on('config', ({ assetClasses: classes, contracts: ctrs, current, gameInPr
   chosenContractId = current.contractId;
   gameInProgress = !!inProgress;
   $('mm-mode').checked = !!current.marketMaking;
+  $('abstract-mode').checked = !!current.abstractMode;
+  $('solo-mode').checked = !!current.soloMM;
+  $('spread-width').value = current.spreadWidth ?? 1;
+  $('bot-min-size').value = current.botMinSize ?? 1;
   $('round-duration').value = current.roundDuration ?? 60;
   $('position-limit').value = current.positionLimit ?? 10;
   $('num-bots').value = current.numBots ?? 0;
@@ -74,6 +78,7 @@ socket.on('config', ({ assetClasses: classes, contracts: ctrs, current, gameInPr
   syncRoundDurationLabel();
   syncPositionLimitLabel();
   syncTrialsVisibility();
+  syncSoloVisibility();
   $('start-btn').textContent = gameInProgress ? 'Join Game' : 'Start Game';
 });
 
@@ -183,6 +188,30 @@ function syncTrialsVisibility() {
   if (isPoisson) syncPoissonLabels();
 }
 
+// Single-player (solo MM): show the width/min-size controls when on. Solo forces
+// market-making with exactly one bot, so reflect that in the UI (check & disable
+// the MM toggle, pin the bot slider) to match what the server will enforce.
+function syncSoloVisibility() {
+  const solo = $('solo-mode').checked;
+  $('solo-settings').classList.toggle('hidden', !solo);
+  if (solo) {
+    $('mm-mode').checked = true;
+    $('mm-mode').disabled = true;
+    $('num-bots').value = 1;
+    $('num-bots').disabled = true;
+  } else {
+    $('mm-mode').disabled = false;
+    $('num-bots').disabled = false;
+  }
+  syncBotsVisibility();
+  syncSoloLabels();
+}
+
+function syncSoloLabels() {
+  $('spread-width-val').textContent = parseFloat($('spread-width').value).toFixed(2);
+  $('bot-min-size-val').textContent = parseInt($('bot-min-size').value, 10);
+}
+
 function syncTrialsLabels() {
   const p = parseInt($('trial-prob').value, 10);
   $('trial-prob-val').textContent = `${p}%`;
@@ -211,6 +240,9 @@ $('position-limit').addEventListener('input', syncPositionLimitLabel);
 $('num-bots').addEventListener('input', syncBotsVisibility);
 $('bot-sims').addEventListener('input', syncBotSimsLabel);
 $('mm-mode').addEventListener('change', syncBotsVisibility);
+$('solo-mode').addEventListener('change', syncSoloVisibility);
+$('spread-width').addEventListener('input', syncSoloLabels);
+$('bot-min-size').addEventListener('input', syncSoloLabels);
 $('trial-prob').addEventListener('input', syncTrialsLabels);
 $('series-mode').addEventListener('change', syncTrialsLabels);
 $('success-target').addEventListener('input', syncTrialsLabels);
@@ -251,6 +283,10 @@ function applySettings() {
     numRounds: parseInt($('num-rounds').value, 10),
     privatePerPlayer: parseInt($('private-per-player').value, 10),
     marketMaking: $('mm-mode').checked,
+    abstractMode: $('abstract-mode').checked,
+    soloMM: $('solo-mode').checked,
+    spreadWidth: parseFloat($('spread-width').value),
+    botMinSize: parseInt($('bot-min-size').value, 10),
     numBots: parseInt($('num-bots').value, 10),
     botSims: parseInt($('bot-sims').value, 10),
     roundDuration: parseInt($('round-duration').value, 10),
@@ -653,6 +689,7 @@ function renderMMBanner(mm) {
 function renderContract(game) {
   $('contract-name').textContent = game.contract.name;
   $('contract-desc').textContent = game.contract.description;
+  renderDist(game);
   $('round-label').textContent =
     `Round ${game.round} of ${game.numRounds}` +
     ` · ${game.revealedCount}/${game.totalAssets} ${game.contract.assetLabel.toLowerCase()} revealed` +
@@ -678,6 +715,7 @@ function renderContract(game) {
     } else {
       if (a.kind === 'die') div.className = 'asset die';
       else if (a.kind === 'number') div.className = 'asset number';
+      else if (a.kind === 'abstract') div.className = 'asset abstract';
       else div.className = 'asset' + (a.red ? ' red' : '');
       div.innerHTML = `<div class="av">${a.label}</div><div class="as">value ${a.value}</div>`;
     }
@@ -719,12 +757,52 @@ function renderContract(game) {
     } else {
       revealBox.classList.add('hidden');
     }
+    renderBotHintReveal(game.botHintReveal);
     renderPnlRecap(game.pnlRecap);
   } else {
     box.classList.add('hidden');
     revealBox.classList.add('hidden');
+    $('bot-hint-reveal').classList.add('hidden');
     $('pnl-recap').classList.add('hidden');
   }
+}
+
+// The wacky abstract distribution panel: the value→probability table plus the
+// single-asset mean (EV). Shown for abstract games so the fair is easy to compute;
+// hidden for every other class. The value with the highest probability is marked.
+function renderDist(game) {
+  const panel = $('dist-panel');
+  const dist = game.abstractDist;
+  if (!dist || !dist.values?.length) { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+  const maxP = Math.max(...dist.probs);
+  const cells = dist.values.map((v, i) => {
+    const p = dist.probs[i];
+    const top = p === maxP ? ' dist-top' : '';
+    return `<div class="dist-cell${top}"><div class="dist-v">${v}</div>` +
+      `<div class="dist-bar"><div class="dist-fill" style="height:${Math.round((p / maxP) * 100)}%"></div></div>` +
+      `<div class="dist-p">${(p * 100).toFixed(0)}%</div></div>`;
+  }).join('');
+  panel.innerHTML =
+    `<div class="dist-head">Abstract underlying — value distribution ` +
+    `<span class="dist-mean">EV per asset = ${dist.mean}</span></div>` +
+    `<div class="dist-grid">${cells}</div>` +
+    `<div class="dist-note">Each hidden asset is an independent draw from this table. The single-asset fair value is the mean shown above.</div>`;
+}
+
+// End-game reveal of the hint each bot held, so players can see what the bot(s)
+// were pricing off. Hidden when there are no bots.
+function renderBotHintReveal(reveal) {
+  const box = $('bot-hint-reveal');
+  if (!reveal || !reveal.length) { box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  const rows = reveal.map((r) => {
+    const h = r.hint
+      ? `${escapeHtml(r.hint.label)}: <b>${escapeHtml(String(r.hint.value))}</b>`
+      : '<span class="muted">no hint</span>';
+    return `<div class="pr-row"><span class="pr-name">${escapeHtml(r.name)}</span><span class="pr-cards">${h}</span></div>`;
+  }).join('');
+  box.innerHTML = `<div class="pr-label">Bot hints (revealed)</div>${rows}`;
 }
 
 // End-game PnL recap: one card per round with a per-player table of PnL earned by

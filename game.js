@@ -124,7 +124,91 @@ const ASSET_CLASSES = {
     valueMax: Infinity, // unbounded count (true Poisson)
     maxAssets: 20,
   },
+
+  // Abstract integers: draws from a WACKY, deliberately non-uniform discrete
+  // distribution over a random subset of [1, 20]. The distribution (support +
+  // weights) is rolled once per game (see rollAbstractDist), stored on
+  // game.contract.params.dist, and passed in via opts.dist so draw/sampleValue
+  // use the same table all game. Values are abstract integers — not tied to any
+  // card/die semantics. The support and per-value probabilities are SHOWN to
+  // players, so the single-asset EV is easy to compute; the game is about
+  // aggregation and spread, not guessing the distribution. valueMin/valueMax on
+  // the class are the widest possible span (1..20); the concrete rolled support
+  // narrows it per game (carried on the dist for hint thresholds via distRange).
+  abstract: {
+    label: 'Abstract',
+    unit: 'value',
+    draw(n, { dist } = {}) {
+      return Array.from({ length: n }, () => {
+        const v = sampleFromDist(dist);
+        return { kind: 'abstract', label: `${v}`, value: v };
+      });
+    },
+    sampleValue({ dist } = {}) {
+      return sampleFromDist(dist);
+    },
+    valueMin: 1,
+    valueMax: 20,
+    maxAssets: 20,
+  },
 };
+
+// Widest span an abstract value can take. The rolled support is a subset of this.
+const ABSTRACT_MIN = 1;
+const ABSTRACT_MAX = 20;
+
+// Roll a wacky per-game distribution over a random subset of [ABSTRACT_MIN,
+// ABSTRACT_MAX]. High variation by design: the support SIZE itself is random
+// (3..18 distinct values), the values are a random scatter, and the weights are
+// drawn skewed (Math.random()^3 exaggerates the spread so one or two values
+// dominate and others are rare). Weights are snapped to whole-percent integers
+// (and renormalized) so the shown table reads cleanly and the EV is a tidy sum.
+// Returns { values:[…], probs:[…], mean } with values ascending, probs summing
+// to 1, and mean = Σ v·p (rounded to 2 dp) — the single-asset fair value.
+function rollAbstractDist() {
+  const span = ABSTRACT_MAX - ABSTRACT_MIN + 1; // 20 possible values
+  const size = Math.max(3, Math.min(span, 3 + Math.floor(Math.random() * 16))); // 3..18
+
+  // Pick `size` distinct values from [MIN, MAX] by shuffling and taking a slice.
+  const pool = Array.from({ length: span }, (_, i) => ABSTRACT_MIN + i);
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  const values = pool.slice(0, size).sort((a, b) => a - b);
+
+  // Skewed raw weights → normalized → snapped to integer percents that sum to 100.
+  const raw = values.map(() => Math.pow(Math.random(), 3) + 1e-6);
+  const total = raw.reduce((a, b) => a + b, 0);
+  let pct = raw.map((w) => Math.round((w / total) * 100));
+  // Fix rounding drift so the percents sum to exactly 100 (adjust the largest).
+  let drift = 100 - pct.reduce((a, b) => a + b, 0);
+  // Guarantee every value keeps a nonzero probability, then absorb drift.
+  for (let i = 0; i < pct.length; i++) if (pct[i] === 0) { pct[i] = 1; drift -= 1; }
+  if (drift !== 0) {
+    const idx = pct.indexOf(Math.max(...pct));
+    pct[idx] = Math.max(1, pct[idx] + drift);
+  }
+  const probs = pct.map((p) => p / 100);
+  const mean = Math.round(values.reduce((s, v, i) => s + v * probs[i], 0) * 100) / 100;
+  return { values, probs, mean };
+}
+
+// Sample one value from a rolled abstract distribution via its cumulative probs.
+// Falls back to a uniform [1,20] draw if the dist is missing/degenerate, so the
+// class never throws even before a dist has been rolled.
+function sampleFromDist(dist) {
+  if (!dist || !dist.values?.length) {
+    return ABSTRACT_MIN + Math.floor(Math.random() * (ABSTRACT_MAX - ABSTRACT_MIN + 1));
+  }
+  const { values, probs } = dist;
+  let r = Math.random();
+  for (let i = 0; i < values.length; i++) {
+    r -= probs[i];
+    if (r <= 0) return values[i];
+  }
+  return values[values.length - 1]; // float-safety fallback
+}
 
 // Draw a Poisson(λ) random count via Knuth's algorithm. λ is clamped ≥ 0.
 function samplePoisson(lambda) {
@@ -139,9 +223,15 @@ function samplePoisson(lambda) {
 }
 
 // Options passed to an asset class's draw/sampleValue for this game: the Bernoulli
-// success probability and the Poisson rate. Safe for classes that ignore them.
-function classOpts(settings) {
-  return { p: settings?.trialProb ?? 0.5, lambda: settings?.poissonRate ?? 3 };
+// success probability, the Poisson rate, and the abstract distribution table.
+// Safe for classes that ignore them. `dist` is read from the game's contract
+// params (rolled once in newGame) so every draw/sample uses the same table.
+function classOpts(settings, params) {
+  return {
+    p: settings?.trialProb ?? 0.5,
+    lambda: settings?.poissonRate ?? 3,
+    dist: params?.dist ?? null,
+  };
 }
 
 // ---------- Contract definitions ----------
@@ -446,7 +536,14 @@ export function rollHintByTier(cards) {
 
 // Validate + clamp incoming settings to safe bounds.
 export function normalizeSettings(s = {}) {
-  const classKey = ASSET_CLASSES[s.assetClass] ? s.assetClass : 'cards';
+  // The "Abstract underlying" toggle (a checkbox in the UI) OVERRIDES the chosen
+  // asset class with the wacky abstract-integer distribution — for any mode. When
+  // off, the picked class is used. `abstractMode` is preserved on the returned
+  // settings so the UI can reflect the toggle's state.
+  const abstractMode = !!s.abstractMode;
+  const classKey = abstractMode
+    ? 'abstract'
+    : (ASSET_CLASSES[s.assetClass] ? s.assetClass : 'cards');
   const cls = ASSET_CLASSES[classKey];
   let numAssets = parseInt(s.numAssets, 10);
   if (!Number.isFinite(numAssets)) numAssets = 5;
@@ -504,18 +601,32 @@ export function normalizeSettings(s = {}) {
   if (!Number.isFinite(poissonRate)) poissonRate = 3;
   poissonRate = Math.max(0.1, Math.min(20, Math.round(poissonRate * 10) / 10));
 
+  // Solo market-making mode (a UI tick, like the MM toggle): the human is the
+  // permanent maker and ONE bot is the forced taker. Implies market-making and at
+  // least one bot; the server enforces those. `spreadWidth` is the fixed N-wide
+  // spread the maker must quote (ask − bid = N); `botMinSize` is the minimum the
+  // bot must trade each round even with no edge. Both snap to sane bounds.
+  const soloMM = !!s.soloMM;
+  let spreadWidth = parseFloat(s.spreadWidth);
+  if (!Number.isFinite(spreadWidth) || spreadWidth <= 0) spreadWidth = 1;
+  spreadWidth = Math.max(tickSize, Math.min(50, Math.round(spreadWidth * 100) / 100));
+  let botMinSize = parseInt(s.botMinSize, 10);
+  if (!Number.isFinite(botMinSize)) botMinSize = 1;
+  botMinSize = Math.max(1, Math.min(10, botMinSize));
+
   return {
-    assetClass: classKey, numAssets, numRounds, privatePerPlayer, numBots, contractId,
+    assetClass: classKey, abstractMode, numAssets, numRounds, privatePerPlayer, numBots, contractId,
     trialProb, seriesMode, successTarget, poissonRate, botSims, tickSize,
+    soloMM, spreadWidth, botMinSize,
   };
 }
 
 export function defaultSettings() {
   return {
-    assetClass: 'cards', numAssets: 5, numRounds: 5, privatePerPlayer: 0, numBots: 0,
+    assetClass: 'cards', abstractMode: false, numAssets: 5, numRounds: 5, privatePerPlayer: 0, numBots: 0,
     contractId: null, roundDuration: 60, positionLimit: 10,
     trialProb: 0.6, seriesMode: false, successTarget: 4, poissonRate: 3, botSims: 500,
-    tickSize: 0.01,
+    tickSize: 0.01, soloMM: false, spreadWidth: 1, botMinSize: 1,
   };
 }
 
@@ -525,7 +636,7 @@ export function defaultSettings() {
 // acceptable for a training game).
 export function drawPrivateAssets(game, count) {
   const cls = ASSET_CLASSES[game.contract.assetClass];
-  return cls.draw(count, classOpts(game.settings));
+  return cls.draw(count, classOpts(game.settings, game.contract.params));
 }
 
 // Recompute settlement over the community pool plus every player's private
@@ -564,7 +675,7 @@ export function estimateFair(game, {
   const others = Math.max(0, otherPrivateCount);
   const useHint = hint && hintIsEvaluable(hint);
   const maxAttemptsPerSim = 200;
-  const opts = classOpts(game.settings);
+  const opts = classOpts(game.settings, game.contract.params);
 
   let sum = 0;
   let sumSq = 0;
@@ -635,17 +746,22 @@ export function contractInfo() {
     .map(({ id, name, description }) => ({ id, name, description }));
 }
 
-// Expose class metadata for the settings UI.
+// Expose class metadata for the settings UI. 'abstract' is excluded from the
+// class picker on purpose: it's driven by the "Abstract underlying" checkbox
+// (which overrides whatever class is picked), not chosen from the dropdown.
 export function assetClassInfo() {
-  return Object.entries(ASSET_CLASSES).map(([key, c]) => ({
-    key, label: c.label, unit: c.unit, maxAssets: c.maxAssets,
-  }));
+  return Object.entries(ASSET_CLASSES)
+    .filter(([key]) => key !== 'abstract')
+    .map(([key, c]) => ({ key, label: c.label, unit: c.unit, maxAssets: c.maxAssets }));
 }
 
 export function newGame(rawSettings) {
   const settings = normalizeSettings(rawSettings);
   const cls = ASSET_CLASSES[settings.assetClass];
-  const opts = classOpts(settings);
+  // For the abstract class, roll the wacky per-game distribution BEFORE drawing so
+  // draw/sampleValue use it (threaded via opts.dist). Other classes have no dist.
+  const dist = settings.assetClass === 'abstract' ? rollAbstractDist() : null;
+  const opts = classOpts(settings, { dist });
 
   // Some asset classes pin their own contract (not random / not user-picked):
   //   trials  → Series or Successes, by the seriesMode toggle
@@ -677,6 +793,10 @@ export function newGame(rawSettings) {
   } else {
     params = rollContractParams(contract, cls);
   }
+  // Carry the abstract distribution on params so classOpts(game.settings,
+  // game.contract.params) reproduces the same table for every later draw/sample
+  // (private cards, bot estimation, settlement over resampled hidden assets).
+  if (dist) params.dist = dist;
   const settlement = contract.settle(assets.map((a) => a.value), params);
   const hintCards = makeHintCards(contract, assets);
   return {
