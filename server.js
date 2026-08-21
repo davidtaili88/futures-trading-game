@@ -270,7 +270,12 @@ function botTakeDecision(room, botPlayer, est, requireMinimum = false) {
   const edge = BOT_TAKE_EDGE_K * est.stdev;
   const { bid, ask } = room.mm;
   const cap = positionLimit(room);
-  const minSize = solo ? (room.settings.botMinSize ?? 1) : 1;
+  const configuredMin = solo ? (room.settings.botMinSize ?? 1) : 1;
+  // The minimum is a per-round NET commitment. Anything already traded this round
+  // counts toward it, so a forced top-up only needs the remaining shortfall — that
+  // keeps |round net| from overshooting the promised size on a second visit.
+  const already = solo ? Math.abs(roundNet(room, botPlayer.name)) : 0;
+  const minSize = Math.max(1, configuredMin - already);
 
   let side = null;
   let maxQty = solo ? cap : 4; // solo bot may size all the way to the cap on edge
@@ -623,17 +628,27 @@ function forceIdleTakers(room) {
   for (const [sid, p] of Object.entries(room.players)) {
     if (!p.connected) continue;
     if (sid === room.mm.makerId) continue;
-    if ((room.roundTradeCount[p.name] ?? 0) > 0) continue;
+    const soloBot = solo && isBot(p);
+    // Solo bots owe a NET minimum, so they're still due a top-up after a partial
+    // fill; everyone else only owes one trade of any size.
+    const shortfall = soloBot
+      ? (room.settings.botMinSize ?? 1) - Math.abs(roundNet(room, p.name))
+      : ((room.roundTradeCount[p.name] ?? 0) > 0 ? 0 : 1);
+    if (shortfall <= 0) continue;
     let side, qty;
-    if (solo && isBot(p)) {
+    if (soloBot) {
       const est = botEstimate(room, p);
-      // Less-bad side: buying costs (ask−fair), selling costs (fair−bid).
-      side = (room.mm.ask - est.fair) <= (est.fair - room.mm.bid) ? 'buy' : 'sell';
+      // Less-bad side: buying costs (ask−fair), selling costs (fair−bid). Once the
+      // bot holds a position, keep topping up on the side it's already on so the
+      // fills add toward the minimum instead of unwinding back below it.
+      const net = roundNet(room, p.name);
+      side = net > 0 ? 'buy'
+        : net < 0 ? 'sell'
+        : (room.mm.ask - est.fair) <= (est.fair - room.mm.bid) ? 'buy' : 'sell';
       const cap = positionLimit(room);
       const dir = side === 'buy' ? 1 : -1;
-      const net = roundNet(room, p.name);
       const headroom = dir > 0 ? cap - net : cap + net;
-      qty = Math.max(0, Math.min(room.settings.botMinSize ?? 1, headroom));
+      qty = Math.max(0, Math.min(shortfall, headroom));
       if (qty <= 0) continue;
     } else {
       side = Math.random() < 0.5 ? 'buy' : 'sell';
@@ -1003,10 +1018,17 @@ function scheduleBotTakes(roomId) {
         if (r.game.round !== roundAtSchedule) return;
         if (!r.players[id] || id === r.mm.makerId) return;
         const est = botEstimate(r, r.players[id]);
-        // On the final attempt, if the bot still hasn't traded this round, it
-        // MUST trade ≥1 (requireMinimum) — deciding the less-bad side itself.
-        const mustTrade = n === 1 && (roundNet(r, r.players[id].name) === 0) &&
-          ((r.roundTradeCount[r.players[id].name] ?? 0) === 0);
+        // On the final attempt the bot MUST still reach its required minimum —
+        // deciding the less-bad side itself. In solo mode "minimum" is the
+        // configured botMinSize measured as |round net|, so a bot that filled a
+        // partial lot earlier (headroom- or conviction-limited) still tops up to
+        // the promised size. Outside solo the requirement is the classic ≥1 trade.
+        const soloHere = !!r.settings.soloMM && isBot(r.players[id]);
+        const traded = soloHere
+          ? Math.abs(roundNet(r, r.players[id].name))
+          : ((r.roundTradeCount[r.players[id].name] ?? 0) > 0 ? Infinity : 0);
+        const required = soloHere ? (r.settings.botMinSize ?? 1) : 1;
+        const mustTrade = n === 1 && traded < required;
         const decision = botTakeDecision(r, r.players[id], est, mustTrade);
         if (decision) {
           executeMakerTrade(r, id, decision.side, decision.qty);
