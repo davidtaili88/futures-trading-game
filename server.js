@@ -241,6 +241,13 @@ function botQuote(room, est, margin) {
   return { bid, ask: round2(bid + margin) };
 }
 
+// The minimum lots the solo bot must trade this round. Chosen by the maker in the
+// quote interface each round (room.mm.botMinSize), so it is per-round state, not a
+// game setting. Defaults to 1 before a quote is submitted.
+function soloMinSize(room) {
+  return room.mm?.botMinSize ?? 1;
+}
+
 // Conviction sizing (solo mode): how many lots a bot wants on `edgeAmt` of edge,
 // scaled by its uncertainty. One "stdev of edge" ≈ SOLO_CONVICTION_LOTS lots, so a
 // clear mispricing draws size and a marginal one draws little. Clamped to the cap
@@ -270,7 +277,7 @@ function botTakeDecision(room, botPlayer, est, requireMinimum = false) {
   const edge = BOT_TAKE_EDGE_K * est.stdev;
   const { bid, ask } = room.mm;
   const cap = positionLimit(room);
-  const configuredMin = solo ? (room.settings.botMinSize ?? 1) : 1;
+  const configuredMin = solo ? soloMinSize(room) : 1;
   // The minimum is a per-round NET commitment. Anything already traded this round
   // counts toward it, so a forced top-up only needs the remaining shortfall — that
   // keeps |round net| from overshooting the promised size on a second visit.
@@ -396,8 +403,9 @@ function publicGameState(room) {
     settlement: closed ? room.game.settlement : null,
     marketMaking: room.settings.marketMaking || false,
     soloMM: room.settings.soloMM || false,
-    spreadWidth: room.settings.spreadWidth ?? 1,
-    botMinSize: room.settings.botMinSize ?? 1,
+    // Solo: this round's randomly-dealt width, and the maker's chosen bot minimum.
+    spreadWidth: room.mm?.margin ?? null,
+    botMinSize: room.mm?.botMinSize ?? 1,
     positionLimit: room.settings.positionLimit ?? 10,
     tickSize: room.settings.tickSize ?? 0.01,
     privatePerPlayer: room.settings.privatePerPlayer || 0,
@@ -632,7 +640,7 @@ function forceIdleTakers(room) {
     // Solo bots owe a NET minimum, so they're still due a top-up after a partial
     // fill; everyone else only owes one trade of any size.
     const shortfall = soloBot
-      ? (room.settings.botMinSize ?? 1) - Math.abs(roundNet(room, p.name))
+      ? soloMinSize(room) - Math.abs(roundNet(room, p.name))
       : ((room.roundTradeCount[p.name] ?? 0) > 0 ? 0 : 1);
     if (shortfall <= 0) continue;
     let side, qty;
@@ -888,23 +896,40 @@ function openBidPhase(roomId) {
   const room = rooms[roomId];
   // Solo market-making: the human maker is not asked to bid — they ARE the maker
   // every round. Skip the bidding/quoting competition and go straight to the
-  // quoting phase with the host as maker and a fixed N-wide spread (spreadWidth).
-  // The existing setMarket handler derives ask = bid + margin and requires the
-  // spread to equal the margin, so the human's market is automatically N wide.
+  // quoting phase with the host as maker. The width is DEALT RANDOMLY each round
+  // (see randomSoloWidth) rather than configured up front, so the maker has to
+  // handle whatever spread they're given. The existing setMarket handler derives
+  // ask = bid + margin and requires the spread to equal the margin, so the
+  // human's market is automatically that round's width.
   if (room.settings.soloMM) {
     const makerId = soloMakerId(room);
     if (!makerId) { room.mm = null; broadcast(roomId); return; } // no human to make
-    const margin = snapToTick(room, room.settings.spreadWidth ?? 1);
+    const margin = randomSoloWidth(room);
     room.mm = { phase: 'quoting', bids: {}, makerId, margin, bid: null, ask: null };
     broadcast(roomId);
     io.to(roomId).emit('bidPhaseResolved', { makerName: room.players[makerId]?.name ?? '—', margin });
-    io.to(makerId).emit('setMarketPrompt', { margin });
+    io.to(makerId).emit('setMarketPrompt', { margin, soloMM: true });
     return;
   }
   room.mm = { phase: 'bidding', bids: {}, makerId: null, bid: null, ask: null };
   broadcast(roomId);
   io.to(roomId).emit('bidPhaseOpen');
   scheduleBotBids(roomId);
+}
+
+// Solo mode deals the maker a fresh market width every round instead of using a
+// configured one: uniform over [SOLO_WIDTH_MIN, SOLO_WIDTH_MAX] in
+// SOLO_WIDTH_STEP increments. Snapped to the tick grid so `ask = bid + margin`
+// always lands on a valid price. A tick coarser than the step (e.g. tick 1 with
+// 0.5 steps) can snap two draws together — that's fine, the grid wins.
+const SOLO_WIDTH_MIN = 1;
+const SOLO_WIDTH_MAX = 10;
+const SOLO_WIDTH_STEP = 0.5;
+function randomSoloWidth(room) {
+  const steps = Math.round((SOLO_WIDTH_MAX - SOLO_WIDTH_MIN) / SOLO_WIDTH_STEP);
+  const raw = SOLO_WIDTH_MIN + Math.floor(Math.random() * (steps + 1)) * SOLO_WIDTH_STEP;
+  // Never let snapping collapse the width to zero on a coarse tick grid.
+  return Math.max(room.settings.tickSize ?? 0.01, snapToTick(room, raw));
 }
 
 // The human who makes the market in solo mode: the host if they're a connected
@@ -1027,7 +1052,7 @@ function scheduleBotTakes(roomId) {
         const traded = soloHere
           ? Math.abs(roundNet(r, r.players[id].name))
           : ((r.roundTradeCount[r.players[id].name] ?? 0) > 0 ? Infinity : 0);
-        const required = soloHere ? (r.settings.botMinSize ?? 1) : 1;
+        const required = soloHere ? soloMinSize(r) : 1;
         const mustTrade = n === 1 && traded < required;
         const decision = botTakeDecision(r, r.players[id], est, mustTrade);
         if (decision) {
@@ -1462,7 +1487,7 @@ io.on('connection', (socket) => {
   });
 
   // Market maker submits their chosen bid and ask prices.
-  socket.on('setMarket', ({ bid, ask }) => {
+  socket.on('setMarket', ({ bid, ask, botMinSize }) => {
     if (!roomId) return;
     const room = getRoom(roomId);
     if (!room.mm || room.mm.phase !== 'quoting') return;
@@ -1470,6 +1495,14 @@ io.on('connection', (socket) => {
     bid = parseFloat(bid);
     ask = parseFloat(ask);
     if (!isFinite(bid) || !isFinite(ask)) return;
+    // Solo mode: the maker sets the bot's minimum size alongside their quote, per
+    // round. Clamp to [1, position cap] — a minimum above the cap could never be
+    // filled. Stored on room.mm so it applies to THIS round's trading only.
+    if (room.settings.soloMM) {
+      let mn = parseInt(botMinSize, 10);
+      if (!Number.isFinite(mn)) mn = 1;
+      room.mm.botMinSize = Math.max(1, Math.min(positionLimit(room), mn));
+    }
     // Snap the bid to the tick grid; derive the ask from the winning margin so the
     // spread stays exactly equal to it (the margin is itself tick-aligned already).
     bid = snapToTick(room, bid);

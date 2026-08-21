@@ -603,21 +603,15 @@ export function normalizeSettings(s = {}) {
 
   // Solo market-making mode (a UI tick, like the MM toggle): the human is the
   // permanent maker and ONE bot is the forced taker. Implies market-making and at
-  // least one bot; the server enforces those. `spreadWidth` is the fixed N-wide
-  // spread the maker must quote (ask − bid = N); `botMinSize` is the minimum the
-  // bot must trade each round even with no edge. Both snap to sane bounds.
+  // least one bot; the server enforces those. The market width is dealt randomly
+  // each round by the server, and the bot's minimum size is chosen by the maker in
+  // the quote interface each round — so neither is a pre-game setting any more.
   const soloMM = !!s.soloMM;
-  let spreadWidth = parseFloat(s.spreadWidth);
-  if (!Number.isFinite(spreadWidth) || spreadWidth <= 0) spreadWidth = 1;
-  spreadWidth = Math.max(tickSize, Math.min(50, Math.round(spreadWidth * 100) / 100));
-  let botMinSize = parseInt(s.botMinSize, 10);
-  if (!Number.isFinite(botMinSize)) botMinSize = 1;
-  botMinSize = Math.max(1, Math.min(10, botMinSize));
 
   return {
     assetClass: classKey, abstractMode, numAssets, numRounds, privatePerPlayer, numBots, contractId,
     trialProb, seriesMode, successTarget, poissonRate, botSims, tickSize,
-    soloMM, spreadWidth, botMinSize,
+    soloMM,
   };
 }
 
@@ -626,7 +620,7 @@ export function defaultSettings() {
     assetClass: 'cards', abstractMode: false, numAssets: 5, numRounds: 5, privatePerPlayer: 0, numBots: 0,
     contractId: null, roundDuration: 60, positionLimit: 10,
     trialProb: 0.6, seriesMode: false, successTarget: 4, poissonRate: 3, botSims: 500,
-    tickSize: 0.01, soloMM: false, spreadWidth: 1, botMinSize: 1,
+    tickSize: 0.01, soloMM: false,
   };
 }
 

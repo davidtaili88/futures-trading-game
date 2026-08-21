@@ -123,22 +123,8 @@
         <input type="checkbox" id="solo-mode" />
         <label for="solo-mode" class="toggle-label">
           <span class="toggle-title">Single-player market making</span>
-          <span class="toggle-desc">You are the permanent market maker; one bot is forced to trade against you every round. You quote a fixed-width market (below) and manage getting picked off. Turning this on forces market-making with exactly one bot and a ±10 position cap.</span>
+          <span class="toggle-desc">You are the permanent market maker; one bot is forced to trade against you every round. Each round deals you a random market width (1–10) and you choose how much the bot must trade against your quote. Turning this on forces market-making with exactly one bot and a ±10 position cap.</span>
         </label>
-      </div>
-
-      <div id="solo-settings" class="hidden">
-        <label class="field-label" for="spread-width">
-          Your market width (N): <b id="spread-width-val">1.00</b>
-        </label>
-        <input id="spread-width" type="range" min="0.1" max="10" step="0.1" value="1" />
-        <p class="hint-text">Every round your quote must be exactly this wide (ask − bid = N). You choose only where to center it.</p>
-
-        <label class="field-label" for="bot-min-size">
-          Bot minimum size: <b id="bot-min-size-val">1</b>
-        </label>
-        <input id="bot-min-size" type="range" min="1" max="10" step="1" value="1" />
-        <p class="hint-text">The bot must trade at least this many lots against you each round, even when it sees no edge. It trades MORE (up to ±10) when your quote is mispriced — that's the adverse selection you're managing.</p>
       </div>
 
       <div id="num-bots-row">
@@ -197,6 +183,13 @@
           Ask (auto = bid + margin)
           <input id="quote-ask" type="number" step="0.5" placeholder="—" readonly />
         </label>
+      </div>
+      <div id="quote-minsize-row" class="hidden">
+        <label class="field-label" for="quote-min-size">
+          Bot minimum size: <b id="quote-min-size-val">1</b>
+        </label>
+        <input id="quote-min-size" type="range" min="1" max="10" step="1" value="1" />
+        <p class="hint-text">The bot must trade at least this many lots against your quote this round, even with no edge. It trades MORE (up to ±10) when your market is mispriced.</p>
       </div>
       <div id="quote-error" class="bid-status"></div>
       <button id="quote-submit-btn">Open Market</button>

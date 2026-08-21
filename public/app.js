@@ -57,8 +57,6 @@ socket.on('config', ({ assetClasses: classes, contracts: ctrs, current, gameInPr
   $('mm-mode').checked = !!current.marketMaking;
   $('abstract-mode').checked = !!current.abstractMode;
   $('solo-mode').checked = !!current.soloMM;
-  $('spread-width').value = current.spreadWidth ?? 1;
-  $('bot-min-size').value = current.botMinSize ?? 1;
   $('round-duration').value = current.roundDuration ?? 60;
   $('position-limit').value = current.positionLimit ?? 10;
   $('num-bots').value = current.numBots ?? 0;
@@ -188,12 +186,13 @@ function syncTrialsVisibility() {
   if (isPoisson) syncPoissonLabels();
 }
 
-// Single-player (solo MM): show the width/min-size controls when on. Solo forces
-// market-making with exactly one bot, so reflect that in the UI (check & disable
-// the MM toggle, pin the bot slider) to match what the server will enforce.
+// Single-player (solo MM): the market width is dealt per round and the bot's
+// minimum size is chosen in the quote overlay, so there are no pre-game controls
+// left here. Solo still forces market-making with exactly one bot, so reflect
+// that in the UI (check & disable the MM toggle, pin the bot slider) to match
+// what the server will enforce.
 function syncSoloVisibility() {
   const solo = $('solo-mode').checked;
-  $('solo-settings').classList.toggle('hidden', !solo);
   if (solo) {
     $('mm-mode').checked = true;
     $('mm-mode').disabled = true;
@@ -204,13 +203,8 @@ function syncSoloVisibility() {
     $('num-bots').disabled = false;
   }
   syncBotsVisibility();
-  syncSoloLabels();
 }
 
-function syncSoloLabels() {
-  $('spread-width-val').textContent = parseFloat($('spread-width').value).toFixed(2);
-  $('bot-min-size-val').textContent = parseInt($('bot-min-size').value, 10);
-}
 
 function syncTrialsLabels() {
   const p = parseInt($('trial-prob').value, 10);
@@ -241,8 +235,6 @@ $('num-bots').addEventListener('input', syncBotsVisibility);
 $('bot-sims').addEventListener('input', syncBotSimsLabel);
 $('mm-mode').addEventListener('change', syncBotsVisibility);
 $('solo-mode').addEventListener('change', syncSoloVisibility);
-$('spread-width').addEventListener('input', syncSoloLabels);
-$('bot-min-size').addEventListener('input', syncSoloLabels);
 $('trial-prob').addEventListener('input', syncTrialsLabels);
 $('series-mode').addEventListener('change', syncTrialsLabels);
 $('success-target').addEventListener('input', syncTrialsLabels);
@@ -285,8 +277,6 @@ function applySettings() {
     marketMaking: $('mm-mode').checked,
     abstractMode: $('abstract-mode').checked,
     soloMM: $('solo-mode').checked,
-    spreadWidth: parseFloat($('spread-width').value),
-    botMinSize: parseInt($('bot-min-size').value, 10),
     numBots: parseInt($('num-bots').value, 10),
     botSims: parseInt($('bot-sims').value, 10),
     roundDuration: parseInt($('round-duration').value, 10),
@@ -384,16 +374,31 @@ socket.on('bidPhaseResolved', ({ makerName, margin }) => {
 
 let myWinMargin = null;
 
-socket.on('setMarketPrompt', ({ margin }) => {
+socket.on('setMarketPrompt', ({ margin, soloMM }) => {
   myWinMargin = margin;
   $('quote-wait-overlay').classList.add('hidden');
-  $('quote-sub').textContent = `You won with margin ${margin}. Your spread must be exactly ${margin} — set any bid price and ask will be bid + ${margin}.`;
+  // Solo mode: the width is dealt at random each round rather than won in a bid,
+  // and the maker also picks the bot's minimum size here. The min-size slider
+  // resets to 1 every round so it's always a deliberate choice.
+  $('quote-sub').textContent = soloMM
+    ? `This round's market width is ${margin} — set any bid price and ask will be bid + ${margin}. Choose how much the bot must trade against you below.`
+    : `You won with margin ${margin}. Your spread must be exactly ${margin} — set any bid price and ask will be bid + ${margin}.`;
+  $('quote-minsize-row').classList.toggle('hidden', !soloMM);
+  if (soloMM) {
+    $('quote-min-size').value = 1;
+    syncQuoteMinSizeLabel();
+  }
   $('quote-bid').value = '';
   $('quote-ask').value = '';
   $('quote-error').textContent = '';
   $('quote-submit-btn').disabled = false;
   $('quote-overlay').classList.remove('hidden');
 });
+
+function syncQuoteMinSizeLabel() {
+  $('quote-min-size-val').textContent = parseInt($('quote-min-size').value, 10);
+}
+$('quote-min-size').addEventListener('input', syncQuoteMinSizeLabel);
 
 socket.on('marketSet', ({ makerName, bid, ask }) => {
   $('quote-wait-overlay').classList.add('hidden');
@@ -417,8 +422,11 @@ $('quote-submit-btn').addEventListener('click', () => {
   if (!isFinite(bid)) { $('quote-error').textContent = 'Enter a valid bid price.'; return; }
   if (!isFinite(ask)) { $('quote-error').textContent = 'Enter a valid ask price.'; return; }
   const spread = Math.round((ask - bid) * 100) / 100;
-  if (spread !== myWinMargin) { $('quote-error').textContent = `Spread must be exactly ${myWinMargin} (your winning bid).`; return; }
-  socket.emit('setMarket', { bid, ask });
+  if (spread !== myWinMargin) { $('quote-error').textContent = `Spread must be exactly ${myWinMargin}.`; return; }
+  socket.emit('setMarket', {
+    bid, ask,
+    botMinSize: parseInt($('quote-min-size').value, 10),
+  });
   $('quote-submit-btn').disabled = true;
   $('quote-overlay').classList.add('hidden');
 });
