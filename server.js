@@ -917,17 +917,44 @@ function openBidPhase(roomId) {
   scheduleBotBids(roomId);
 }
 
-// Solo mode deals the maker a fresh market width every round instead of using a
-// configured one: uniform over [SOLO_WIDTH_MIN, SOLO_WIDTH_MAX] in
-// SOLO_WIDTH_STEP increments. Snapped to the tick grid so `ask = bid + margin`
-// always lands on a valid price. A tick coarser than the step (e.g. tick 1 with
-// 0.5 steps) can snap two draws together — that's fine, the grid wins.
-const SOLO_WIDTH_MIN = 1;
-const SOLO_WIDTH_MAX = 10;
-const SOLO_WIDTH_STEP = 0.5;
+// Solo mode deals the maker a fresh market width every round. The width SCALES
+// WITH THE CONTRACT: a fixed 1–10 band is meaningless across contracts whose
+// values live on wildly different scales (a Sum of dice sits near 20, Sum of
+// Squares in the hundreds, a Bernoulli count in single digits). So the width is
+// a multiple of the round's own uncertainty — the same `K · stdev` convention the
+// bots already use for their bid margins (see botBidMargin) — which makes a given
+// multiplier mean the same thing everywhere: how many stdevs of edge the taker is
+// being handed.
+//
+// The multiplier is drawn uniformly from [SOLO_WIDTH_K_MIN, SOLO_WIDTH_K_MAX] in
+// SOLO_WIDTH_K_STEP increments, so the maker still faces easy and hard rounds —
+// but "hard" is now hard relative to THIS contract. Uncertainty is measured from
+// the position of someone who knows only what's public this round, so the width
+// naturally tightens as assets are revealed and the contract's range narrows.
+const SOLO_WIDTH_K_MIN = 0.3;
+const SOLO_WIDTH_K_MAX = 2.0;
+const SOLO_WIDTH_K_STEP = 0.1;
+// Fallback multiplier applied to the fair value if stdev is ~0 (a fully-revealed
+// or degenerate contract has no spread to speak of); keeps the market from
+// collapsing to a single tick.
+const SOLO_WIDTH_DEGENERATE_PCT = 0.02;
+
 function randomSoloWidth(room) {
-  const steps = Math.round((SOLO_WIDTH_MAX - SOLO_WIDTH_MIN) / SOLO_WIDTH_STEP);
-  const raw = SOLO_WIDTH_MIN + Math.floor(Math.random() * (steps + 1)) * SOLO_WIDTH_STEP;
+  const steps = Math.round((SOLO_WIDTH_K_MAX - SOLO_WIDTH_K_MIN) / SOLO_WIDTH_K_STEP);
+  const k = SOLO_WIDTH_K_MIN + Math.floor(Math.random() * (steps + 1)) * SOLO_WIDTH_K_STEP;
+
+  // Public-information uncertainty for this round: no private cards, no hint —
+  // just what everyone can see. This is the contract's own scale right now.
+  const revealedCount = revealedForRound(room.game);
+  const est = estimateFair(room.game, {
+    revealedValues: room.game.assets.slice(0, revealedCount).map((a) => a.value),
+    hiddenCommunityCount: Math.max(0, room.game.assets.length - revealedCount),
+    otherPrivateCount: 0,
+    sims: room.settings.botSims ?? 500,
+  });
+
+  let raw = k * est.stdev;
+  if (!(raw > 0)) raw = Math.abs(est.fair) * SOLO_WIDTH_DEGENERATE_PCT;
   // Never let snapping collapse the width to zero on a coarse tick grid.
   return Math.max(room.settings.tickSize ?? 0.01, snapToTick(room, raw));
 }
