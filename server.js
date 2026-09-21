@@ -4,6 +4,7 @@ import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { newGame, revealedForRound, normalizeSettings, defaultSettings, assetClassInfo, contractInfo, drawPrivateAssets, computeSettlement, stripHintForClient, rollHintByTier, estimateFair, seriesDecidedRound } from './game.js';
+import { rollHiddenDist, sampleHidden, makeCard, spawnSignalBots, botAct, buildSignalDebrief } from './signal.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -114,7 +115,11 @@ function applyRoundNet(room, playerName, signedDelta) {
 const BOT_MISTAKE_RATE = 0.15;   // chance per bidding turn to bid off-model
 const BOT_MARGIN_K = 0.6;        // bid margin ≈ K * stdev (confidence-scaled)
 const BOT_TAKE_EDGE_K = 0.5;     // take only if |fair - quote| > K * stdev
-const BOT_MIN_MARGIN = 0.01;     // floor: confident bots can quote as tight as 0.01
+// Off-model mistake band, as a MULTIPLIER on stdev (see botBidMargin). Spans
+// roughly 1/3× to 3× the correct BOT_MARGIN_K, so a mistaken bot is visibly too
+// tight or too wide, but never absurd relative to the contract's own scale.
+const BOT_MISTAKE_K_MIN = 0.2;
+const BOT_MISTAKE_K_MAX = 1.8;
 const BOT_ACT_MIN_MS = 500;      // action jitter lower bound
 const BOT_ACT_MAX_MS = 3000;     // action jitter upper bound
 // Open-outcry (non-MM) bot tuning. Bots quote a fairly TIGHT two-sided market
@@ -185,8 +190,17 @@ function botBidMargin(room, est) {
   const jitter = 0.85 + Math.random() * 0.3; // ±15% so bots rarely tie exactly
   let margin;
   if (Math.random() < BOT_MISTAKE_RATE) {
-    // Off-model: random margin in a plausible band, unrelated to real stdev.
-    margin = BOT_MIN_MARGIN + Math.random() * 8;
+    // Off-model: the bot misjudges its OWN confidence — it quotes as if the
+    // contract's uncertainty were some multiple of the truth. The mistake is a
+    // multiplier on stdev, not an absolute price band: an absolute band (the old
+    // `0.01 + rand*8`) is meaningless once the contract's scale changes, and on a
+    // high-variance contract like Sum of Squares it produced ~4-wide markets
+    // against a stdev of ~170. Because the maker role goes to the TIGHTEST bid,
+    // such a bot won nearly every auction and made an absurdly narrow market.
+    // Drawn log-uniformly so too-tight and too-wide mistakes are equally likely.
+    const lo = Math.log(BOT_MISTAKE_K_MIN);
+    const hi = Math.log(BOT_MISTAKE_K_MAX);
+    margin = Math.exp(lo + Math.random() * (hi - lo)) * est.stdev;
   } else {
     margin = BOT_MARGIN_K * est.stdev * jitter;
   }
@@ -341,6 +355,11 @@ function startRoundTimer(roomId) {
 function advanceRound(roomId) {
   const room = rooms[roomId];
   if (!room || isClosed(room)) return;
+  // Signal mode has its own round cycle (reveal a card, let the bots act).
+  if (room.settings.signalMode) {
+    advanceSignalRound(roomId);
+    return;
+  }
   clearRoundTimer(room);
   // MM mode: every non-maker must buy or sell each round. Force idle takers into
   // a default trade before the round's maker/quote is cleared.
@@ -364,7 +383,22 @@ function advanceRound(roomId) {
   }
 }
 
+// Recompute the settled value over the community pool plus EVERY current
+// player's private assets. Private cards count toward settlement, so the value
+// depends on who is in the game — it must be recomputed whenever the roster
+// changes (a player joining mid-game is dealt their own privates below), not
+// just once at start. Contracts that are order statistics over the full set
+// (top2_minus_bottom2, median, max/min…) are especially sensitive to this.
+function resettle(room) {
+  if (!room.game) return;
+  const privateValues = Object.values(room.players)
+    .flatMap((p) => (p.privateAssets ?? []).map((a) => a.value));
+  room.game.settlement = computeSettlement(room.game, privateValues);
+}
+
 function isClosed(room) {
+  // Signal mode tracks its own completion (see settleSignal).
+  if (room.settings.signalMode) return !!room.signal?.closed;
   // Series (best-of) contracts settle EARLY: once enough trials are revealed to
   // clinch the outcome, the game is over even if trials remain unplayed.
   const decided = seriesDecidedRound(room.game);
@@ -390,6 +424,37 @@ function connectedPlayerIds(room) {
 }
 
 function publicGameState(room) {
+  // Signal mode has no community asset pool, no hints and no private cards, so
+  // none of the reveal blocks below apply. Its own public view (signalPublic)
+  // carries the revealed cards, the bot tape and, once closed, the debrief.
+  if (room.settings.signalMode) {
+    const closed = isClosed(room);
+    const sig = room.signal;
+    return {
+      contract: room.game.contract,
+      revealedAssets: (sig?.rounds ?? []).map((r) => r.card),
+      revealedCount: sig?.rounds.length ?? 0,
+      totalAssets: sig?.numRounds ?? 0,
+      round: room.game.round,
+      numRounds: sig?.numRounds ?? 0,
+      settled: closed,
+      settlement: closed ? sig.settlement : null,
+      marketMaking: false,
+      soloMM: false,
+      signalMode: true,
+      spreadWidth: null,
+      botMinSize: 1,
+      positionLimit: room.settings.positionLimit ?? 30,
+      tickSize: room.settings.tickSize ?? 0.01,
+      privatePerPlayer: 0,
+      abstractMode: false,
+      abstractDist: null,
+      privateReveal: null,
+      botHintReveal: null,
+      pnlRecap: null,
+      signal: signalPublic(room),
+    };
+  }
   const revealedCount = revealedForRound(room.game);
   const closed = isClosed(room);
   return {
@@ -403,6 +468,7 @@ function publicGameState(room) {
     settlement: closed ? room.game.settlement : null,
     marketMaking: room.settings.marketMaking || false,
     soloMM: room.settings.soloMM || false,
+    signalMode: room.settings.signalMode || false,
     // Solo: this round's randomly-dealt width, and the maker's chosen bot minimum.
     spreadWidth: room.mm?.margin ?? null,
     botMinSize: room.mm?.botMinSize ?? 1,
@@ -428,6 +494,7 @@ function publicGameState(room) {
     botHintReveal: closed ? buildBotHintReveal(room) : null,
     // End-game recap: per-player, per-round making/taking/adverse PnL breakdown.
     pnlRecap: closed ? buildPnlRecap(room) : null,
+    signal: null,
   };
 }
 
@@ -473,9 +540,16 @@ function broadcast(roomId) {
 }
 
 function startGame(roomId, rawSettings) {
+  // Signal Reading mode replaces the whole trading model, so it gets its own
+  // start path rather than a pile of conditionals through this one.
+  if (rawSettings?.signalMode) {
+    startSignalGame(roomId, rawSettings);
+    return;
+  }
   const room = getRoom(roomId);
   room.settings = normalizeSettings(rawSettings);
   room.settings.marketMaking = !!rawSettings.marketMaking;
+  room.signal = null;
   const rd = parseInt(rawSettings.roundDuration, 10);
   room.settings.roundDuration = Number.isFinite(rd) && rd >= 0 ? Math.min(rd, 300) : 0;
   const pl = parseInt(rawSettings.positionLimit, 10);
@@ -529,10 +603,7 @@ function startGame(roomId, rawSettings) {
     room.playersByName[p.name] = { cash: p.cash, position: p.position, hintKey: null, privateAssets: p.privateAssets };
   }
   // Fold every player's private assets into the settlement value.
-  if (privateN > 0) {
-    const privateValues = Object.values(room.players).flatMap((p) => p.privateAssets.map((a) => a.value));
-    room.game.settlement = computeSettlement(room.game, privateValues);
-  }
+  if (privateN > 0) resettle(room);
   // Assign hints by INDEPENDENT per-player tier roll (see rollHintByTier):
   // each player rolls good/medium/bad by HINT_TIER_WEIGHTS, then gets a random
   // hint from that tier. Rolls are independent, so duplicates are allowed and
@@ -800,6 +871,197 @@ function buildPnlRecap(room) {
   return {
     rounds: [...roundsSet].sort((a, b) => a - b),
     players: byPlayer,
+  };
+}
+
+// ---------- Signal Reading mode ----------
+//
+// A self-contained single-player game that shares almost nothing with the two
+// market modes: there is no order book, no market maker, and no bidding phase.
+// The player trades against the HOUSE at the revealed card's value, and the bots
+// exist only to be read. See signal.js for the model and the reasoning.
+//
+// Room state lives on room.signal:
+//   dist       — the hidden distribution (server-side truth, revealed at the end)
+//   bots       — spawned signal bots, each with fixed hidden coin flips
+//   rounds     — per-round record: { card, botActions, playerSide, playerQty }
+//   settlement — a FRESH draw from the same dist, taken at game start and held
+//                back so it can't leak; settling to a draw made up front (rather
+//                than at the end) keeps it independent of anything the player did.
+function startSignalGame(roomId, rawSettings) {
+  const room = getRoom(roomId);
+  room.settings = normalizeSettings(rawSettings);
+  room.settings.marketMaking = false;
+  room.settings.soloMM = false;
+  const rd = parseInt(rawSettings.roundDuration, 10);
+  room.settings.roundDuration = Number.isFinite(rd) && rd >= 0 ? Math.min(rd, 300) : 0;
+  const pl = parseInt(rawSettings.positionLimit, 10);
+  room.settings.positionLimit = Number.isFinite(pl) && pl > 0 ? Math.min(pl, 1000) : 30;
+
+  const dist = rollHiddenDist();
+  const numRounds = room.settings.signalRounds;
+  const bots = spawnSignalBots(dist, room.settings.signalBots);
+
+  // Drop any bots left over from a previous non-signal game: signal bots are not
+  // players and must not appear on the leaderboard.
+  for (const [id, p] of Object.entries(room.players)) {
+    if (isBot(p)) delete room.players[id];
+  }
+
+  room.signal = {
+    dist,
+    bots,
+    rounds: [],
+    numRounds,
+    settlement: sampleHidden(dist),
+    closed: false,
+  };
+  // A minimal game object so the shared plumbing (round counter, broadcast,
+  // settlement display) keeps working without special-casing every call site.
+  room.game = {
+    settings: room.settings,
+    contract: {
+      id: 'signal_draw',
+      name: 'Next Card (hidden distribution)',
+      description:
+        'Settles to one fresh card drawn from the same hidden distribution as the cards revealed each round. Fair value is the distribution\'s mean — which you must infer from the reveals and from what the bots do.',
+      assetClass: 'cards',
+      assetLabel: 'Cards',
+      unit: 'card',
+      numAssets: numRounds,
+      numRounds,
+      params: {},
+    },
+    assets: [],
+    settlement: room.signal.settlement,
+    hintCards: [],
+    round: 1,
+  };
+
+  room.trades = [];
+  room.tradeCount = {};
+  room.roundTradeCount = {};
+  room.roundNetPos = {};
+  room.mm = null;
+  room.orderBook = { bids: [], asks: [] };
+  room.playersByName = {};
+  clearRoundTimer(room);
+
+  for (const p of Object.values(room.players)) {
+    p.cash = START_CASH;
+    p.position = 0;
+    p.privateAssets = [];
+    p.hintKey = null;
+    room.playersByName[p.name] = { cash: p.cash, position: p.position, hintKey: null, privateAssets: [] };
+    io.to(p.id).emit('hints', []);
+    io.to(p.id).emit('privateAssets', []);
+  }
+
+  signalRevealRound(room);
+  io.to(roomId).emit('gameStarted');
+  broadcast(roomId);
+  startSignalRoundTimer(roomId);
+}
+
+// Reveal the round's card and let every bot act on it. The bots act BEFORE the
+// player trades, so their behaviour is information the player can actually use
+// this round — that is the whole point of the mode.
+function signalRevealRound(room) {
+  const sig = room.signal;
+  const card = sampleHidden(sig.dist);
+  const botActions = sig.bots.map((b) => {
+    const rec = botAct(b, card);
+    // Only side and size are public. The bot's belief and edge stay server-side
+    // until the debrief.
+    return { name: b.name, side: rec.side, qty: rec.qty, position: b.position };
+  });
+  sig.rounds.push({
+    card: makeCard(card),
+    cardValue: card,
+    botActions,
+    playerSide: null,
+    playerQty: 0,
+  });
+}
+
+function startSignalRoundTimer(roomId) {
+  const room = rooms[roomId];
+  clearRoundTimer(room);
+  const duration = room.settings.roundDuration;
+  if (!duration || duration <= 0) return;
+  room.roundEndsAt = Date.now() + duration * 1000;
+  room.roundTimer = setTimeout(() => {
+    room.roundTimer = null;
+    advanceSignalRound(roomId);
+  }, duration * 1000);
+}
+
+function advanceSignalRound(roomId) {
+  const room = rooms[roomId];
+  if (!room?.signal || room.signal.closed) return;
+  clearRoundTimer(room);
+  const sig = room.signal;
+  if (sig.rounds.length >= sig.numRounds) {
+    settleSignal(room);
+    broadcast(roomId);
+    return;
+  }
+  room.game.round = sig.rounds.length + 1;
+  signalRevealRound(room);
+  broadcast(roomId);
+  startSignalRoundTimer(roomId);
+}
+
+function settleSignal(room) {
+  const sig = room.signal;
+  if (sig.closed) return;
+  sig.closed = true;
+  const s = sig.settlement;
+  room.game.settlement = s;
+  for (const p of Object.values(room.players)) {
+    p.cash += p.position * s;
+    p.position = 0;
+    syncPlayerByName(room, p.id);
+  }
+  sig.debrief = buildSignalDebrief({
+    dist: sig.dist,
+    rounds: sig.rounds.map((r) => ({
+      card: r.cardValue,
+      playerSide: r.playerSide,
+      playerQty: r.playerQty,
+      botActions: r.botActions,
+    })),
+    settlement: s,
+    bots: sig.bots,
+  });
+}
+
+// Public view of signal state. Everything hidden (the distribution, the bots'
+// parameters, the settlement draw) is withheld until close.
+function signalPublic(room) {
+  const sig = room.signal;
+  if (!sig) return null;
+  const closed = sig.closed;
+  return {
+    numRounds: sig.numRounds,
+    round: sig.rounds.length,
+    closed,
+    // Every card revealed so far, oldest first — the player's sample.
+    revealed: sig.rounds.map((r) => ({
+      round: r.round ?? null,
+      card: r.card,
+      value: r.cardValue,
+      botActions: r.botActions,
+      playerSide: r.playerSide,
+      playerQty: r.playerQty,
+    })),
+    // The current round's card is the tradeable price.
+    currentCard: sig.rounds.length ? sig.rounds[sig.rounds.length - 1].card : null,
+    currentValue: sig.rounds.length ? sig.rounds[sig.rounds.length - 1].cardValue : null,
+    traded: sig.rounds.length ? sig.rounds[sig.rounds.length - 1].playerSide != null : false,
+    botNames: sig.bots.map((b) => b.name),
+    settlement: closed ? sig.settlement : null,
+    debrief: closed ? sig.debrief : null,
   };
 }
 
@@ -1322,10 +1584,16 @@ io.on('connection', (socket) => {
       // If this returning player is the maker mid-quote, re-prompt them to set
       // the market — the original prompt went to their now-dead socket.
       if (room.mm && room.mm.phase === 'quoting' && room.mm.makerId === socket.id) {
-        socket.emit('setMarketPrompt', { margin: room.mm.margin });
+        socket.emit('setMarketPrompt', { margin: room.mm.margin, soloMM: !!room.settings.soloMM });
       }
     } else {
-      // New player — fresh state.
+      // New player — fresh state. If they're joining a game already in progress
+      // that deals private cards, deal them theirs too: privates count toward
+      // settlement, so a player holding none would both be short information and
+      // leave the settled value inconsistent with the table. Recompute the
+      // settlement afterwards so it reflects the new roster.
+      const privateN = room.settings.privatePerPlayer || 0;
+      const privates = (room.game && privateN > 0) ? drawPrivateAssets(room.game, privateN) : [];
       room.players[socket.id] = {
         id: socket.id,
         name: clean,
@@ -1333,9 +1601,13 @@ io.on('connection', (socket) => {
         position: 0,
         connected: true,
         hintKey: null,
-        privateAssets: [],
+        privateAssets: privates,
       };
-      room.playersByName[clean] = { cash: START_CASH, position: 0, hintKey: null, privateAssets: [] };
+      room.playersByName[clean] = { cash: START_CASH, position: 0, hintKey: null, privateAssets: privates };
+      if (privates.length) {
+        resettle(room);
+        socket.emit('privateAssets', privates);
+      }
       const hint = pickHintFor(room, socket.id);
       socket.emit('hints', hint ? [stripHintForClient(hint)] : []);
     }
@@ -1369,6 +1641,45 @@ io.on('connection', (socket) => {
     const p = room.players[socket.id];
     if (!p) return;
     if (isClosed(room)) return;
+
+    // Signal mode: fill against the HOUSE at the revealed card's value. One trade
+    // per round, max 3 lots — the decision is direction and size, not price.
+    if (room.settings.signalMode) {
+      if (side !== 'buy' && side !== 'sell') return;
+      const sig = room.signal;
+      if (!sig || !sig.rounds.length) return;
+      const cur = sig.rounds[sig.rounds.length - 1];
+      if (cur.playerSide != null) {
+        socket.emit('tradeError', 'You have already traded this round.');
+        return;
+      }
+      qty = Math.max(1, Math.min(3, parseInt(qty, 10) || 0));
+      const signedDelta = side === 'buy' ? qty : -qty;
+      const cap = positionLimit(room);
+      if (Math.abs(p.position + signedDelta) > cap) {
+        socket.emit('tradeError', `Position limit (±${cap}) reached — your position is ${p.position > 0 ? '+' : ''}${p.position}.`);
+        return;
+      }
+      const price = cur.cardValue;
+      cur.playerSide = side;
+      cur.playerQty = qty;
+      p.position += signedDelta;
+      p.cash -= signedDelta * price;
+      room.tradeCount[p.name] = (room.tradeCount[p.name] ?? 0) + 1;
+      syncPlayerByName(room, socket.id);
+      room.trades.push({
+        round: sig.rounds.length,
+        price,
+        qty,
+        side,
+        buyer: side === 'buy' ? p.name : 'House',
+        seller: side === 'sell' ? p.name : 'House',
+        ts: Date.now(),
+      });
+      broadcast(roomId);
+      return;
+    }
+
     if (!room.mm || room.mm.phase !== 'trading') return;
     if (socket.id === room.mm.makerId) return;
     if (side !== 'buy' && side !== 'sell') return;

@@ -20,7 +20,70 @@ at the true value. Highest PnL wins.
   - **Tick size** — the minimum price increment (default 0.01; selectable up to 1). Every order and quote price, from humans and bots, snaps to this grid.
 - **Per-player hints** — each player gets one randomly assigned hint (Min, Max, Mean, or Asset Range), hidden by default.
 - **Market Making Mode** — before each round, players bid a spread margin. The tightest quote wins and becomes the market maker, setting their own bid/ask prices. All other players trade at those prices.
+- **Signal Reading Mode** — a single-player inference game (see below).
 - **Trade ticket**, **live leaderboard** (mark-to-market PnL), and **trade tape**.
+
+---
+
+## Signal Reading Mode
+
+A single-player game about **inference**, not market making. Turn it on with the violet
+toggle in the settings panel; it overrides the asset class, contract and trading model.
+
+Each round one card (A=1…K=13) is drawn from a **hidden** distribution and revealed. You
+may buy or sell **1–3 lots against the house** at that card's face value, or sit the round
+out — one trade per round. After the last round the contract settles to **one fresh card
+from the same hidden distribution**.
+
+That settlement rule is what gives the mode its spine: because the settlement draw comes
+from the same distribution as the reveals, **fair value is the distribution's mean**, and
+every card you see is a sample of it. A position of `q` lots bought at `c` pays
+`(settlement − c) · q`, so your edge on a buy is `trueMean − c` — a quantity you must
+estimate and never get told during the game.
+
+### The bots are signal, not counterparties
+
+Bots trade publicly alongside you, but **you never trade against them** — your fill is
+always the house price. Their only role is to leak information. Each bot holds a **private
+burn-in sample** of the same hidden distribution that you never see, so a well-informed bot
+genuinely knows more than you do early on, while your own running mean catches up as the
+reveals accumulate. Knowing *when to stop deferring* to a bot is the core skill (with the
+default settings the crossover lands around round 13 of 25).
+
+Every bot's traits are **independent coin flips**, fixed at spawn for the whole game:
+
+| Trait | Heads | Tails |
+| --- | --- | --- |
+| Bias | saw 12 private cards — near-unbiased | saw 3 — badly biased, but plausibly so |
+| Coherence | low belief noise: near-fixed threshold | high noise: contradicts itself |
+| Sizing | readable — size tracks perceived edge | opaque — size says little about edge |
+| Inventory | trades freely | inventory-shy: sizes down when long |
+
+Two deliberate design points. Sizes are drawn from a **softmax** over `{0,1,2,3}` rather
+than computed from edge, because a deterministic size would make each trade an exact
+interval reveal on the bot's belief — two or three trades would pin it by constraint-solving
+instead of inference. And an **inventory-shy** bot will sometimes sell a cheap card simply
+because it is too long; that looks incoherent from outside but isn't, so a player who tracks
+the inventory trail (shown on the bot tape) can untangle what a casual player cannot.
+
+The two hidden axes show up as genuinely independent observables: coherence is readable from
+how well one threshold explains a bot's trades (~92% vs ~75%), and bias from how often it
+disagrees with your own running mean and whether it is right when it does (~58% vs ~39%).
+
+### The debrief
+
+At the end everything is revealed: the true distribution and its mean, the mean of the
+sample you actually saw, and every bot's traits, private sample size and estimate.
+
+The part that matters most is the **edge vs luck** split. Each round is re-scored against
+the running mean of the cards revealed *up to that point* — the best estimate available at
+the time, not the answer you have afterwards. Edge is the PnL your decisions earned given
+what was knowable; luck is the remainder, and the two always sum to your realised PnL. A
+positive-edge, negative-PnL game means you played well and the cards went against you,
+which is precisely the outcome a naive scoreboard would punish you for.
+
+Settings: **rounds** (5–60, default 25) and **signal bots** (0–6, default 3). Note that more
+bots makes the game *easier*, not harder — several independent noisy estimates average out.
 
 ---
 
@@ -84,6 +147,7 @@ Open [http://localhost:3000](http://localhost:3000). To play with others on the 
 
 - `server.js` — Express + Socket.IO server; room management, game state, trading, market making, round/settlement logic.
 - `game.js` — game engine: asset classes, contracts, drawing, settlement, hint generation.
+- `signal.js` — Signal Reading mode: the hidden distribution, the signal bots, and the edge/luck debrief scoring.
 - `public/` — frontend (`index.html`, `styles.css`, `app.js`).
 - `render.yaml` — Render deployment config.
 

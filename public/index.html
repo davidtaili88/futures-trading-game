@@ -127,6 +127,28 @@
         </label>
       </div>
 
+      <div class="toggle-row signal-toggle">
+        <input type="checkbox" id="signal-mode" />
+        <label for="signal-mode" class="toggle-label">
+          <span class="toggle-title">Signal Reading <span class="mode-tag">single player</span></span>
+          <span class="toggle-desc">The card distribution is <b>hidden</b>. Each round a card is revealed and you may buy or sell 1–3 lots of it <b>against the house</b> at its face value. The contract settles to one fresh card from the same hidden distribution — so fair value is the distribution's mean, which you must infer. Bots trade publicly alongside you but you never trade against them: they are pure <b>signal</b>. Each bot has a private sample of the deck you never see, plus independently-flipped hidden traits (biased or not, coherent or not, readable size or not, inventory-shy or not). Work out which bots are worth following. Everything is revealed at the end, with your PnL split into <b>edge</b> and <b>luck</b>.</span>
+        </label>
+      </div>
+
+      <div id="signal-settings" class="hidden">
+        <label class="field-label" for="signal-rounds">
+          Rounds: <b id="signal-rounds-val">25</b>
+        </label>
+        <input id="signal-rounds" type="range" min="5" max="60" step="1" value="25" />
+        <p class="hint-text">One card revealed per round. More rounds = your own running mean gets sharper, so the bots' private information matters less late on.</p>
+
+        <label class="field-label" for="signal-bots">
+          Signal bots: <b id="signal-bots-val">3</b>
+        </label>
+        <input id="signal-bots" type="range" min="0" max="6" step="1" value="3" />
+        <p class="hint-text">Each bot's traits are independent coin flips, fixed for the whole game. Note that <b>more bots makes the game easier</b>, not harder — several independent noisy estimates average out.</p>
+      </div>
+
       <div id="num-bots-row">
         <label class="field-label" for="num-bots">
           Bots: <b id="num-bots-val">0</b>
@@ -244,13 +266,40 @@
         <div id="bot-hint-reveal" class="private-reveal hidden"></div>
         <div id="pnl-recap" class="pnl-recap hidden"></div>
       </div>
+
+      <!-- Signal mode: the end-of-game reveal. The true distribution, plus the
+           edge/luck split and the verdict on each bot. -->
+      <div id="signal-debrief" class="signal-debrief hidden"></div>
     </section>
 
     <!-- Middle column: trade ticket -->
     <section class="panel">
       <div id="mm-banner" class="mm-banner hidden"></div>
 
-      <h2 style="margin-top:24px;">Trade Ticket</h2>
+      <!-- Signal mode: trade the revealed card against the house. Direction and
+           size only — the price is the card's face value. -->
+      <div id="signal-trade" class="signal-trade hidden">
+        <h2>This Round's Card</h2>
+        <div id="signal-card" class="signal-card">—</div>
+        <div id="signal-trade-note" class="signal-note">
+          Buy if you think the hidden distribution's mean is <b>above</b> this, sell if <b>below</b>.
+          You settle against one fresh card from that distribution.
+        </div>
+        <div class="signal-size-row">
+          <button class="sig-btn sig-buy" data-side="buy" data-qty="1">BUY 1</button>
+          <button class="sig-btn sig-buy" data-side="buy" data-qty="2">BUY 2</button>
+          <button class="sig-btn sig-buy" data-side="buy" data-qty="3">BUY 3</button>
+        </div>
+        <div class="signal-size-row">
+          <button class="sig-btn sig-sell" data-side="sell" data-qty="1">SELL 1</button>
+          <button class="sig-btn sig-sell" data-side="sell" data-qty="2">SELL 2</button>
+          <button class="sig-btn sig-sell" data-side="sell" data-qty="3">SELL 3</button>
+        </div>
+        <div id="signal-traded" class="signal-traded"></div>
+        <div id="signal-stats" class="signal-stats"></div>
+      </div>
+
+      <h2 style="margin-top:24px;" id="ticket-heading">Trade Ticket</h2>
       <div class="ticket">
         <label>Qty
           <input id="qty" type="number" min="1" max="100" value="1" />
@@ -289,6 +338,13 @@
 
     <!-- Right column: players + trade tape -->
     <section class="panel">
+      <!-- Signal mode: the bot tape. This is the whole information channel —
+           every bot's direction and size each round, and its running position. -->
+      <div id="signal-bots-panel" class="signal-bots-panel hidden">
+        <h2>Bot Tape <span class="muted">what the bots did</span></h2>
+        <div id="signal-bot-tape" class="signal-bot-tape"></div>
+      </div>
+
       <h2>Traders</h2>
       <table class="players">
         <thead><tr><th>Name</th><th>Cash</th><th>Pos</th><th>PnL</th></tr></thead>

@@ -57,6 +57,9 @@ socket.on('config', ({ assetClasses: classes, contracts: ctrs, current, gameInPr
   $('mm-mode').checked = !!current.marketMaking;
   $('abstract-mode').checked = !!current.abstractMode;
   $('solo-mode').checked = !!current.soloMM;
+  $('signal-mode').checked = !!current.signalMode;
+  if (current.signalRounds != null) $('signal-rounds').value = current.signalRounds;
+  if (current.signalBots != null) $('signal-bots').value = current.signalBots;
   $('round-duration').value = current.roundDuration ?? 60;
   $('position-limit').value = current.positionLimit ?? 10;
   $('num-bots').value = current.numBots ?? 0;
@@ -206,6 +209,35 @@ function syncSoloVisibility() {
 }
 
 
+// Signal Reading mode replaces the asset class, the contract and the whole
+// trading model, so when it's on we hide every setting it ignores rather than
+// leave dead controls on screen. It's also single-player by construction (the
+// bots aren't counterparties), so the market-mode toggles are disabled.
+function syncSignalVisibility() {
+  const on = $('signal-mode').checked;
+  $('signal-settings').classList.toggle('hidden', !on);
+  for (const id of ['mm-mode', 'solo-mode', 'abstract-mode']) {
+    const el = $(id);
+    el.disabled = on;
+    if (on) el.checked = false;
+  }
+  // Settings signal mode doesn't read. When switching back off, syncTrialsVisibility
+  // re-derives which of these the chosen asset class wants shown, so we only force
+  // them hidden here and let it undo that.
+  for (const id of ['contract-row', 'private-row', 'num-rounds-row', 'num-bots-row',
+                    'trials-settings', 'poisson-settings']) {
+    if (on) $(id)?.classList.add('hidden');
+  }
+  $('asset-class-group').classList.toggle('hidden', on);
+  if (on) syncSignalLabels();
+  else { syncTrialsVisibility(); syncSoloVisibility(); }
+}
+
+function syncSignalLabels() {
+  $('signal-rounds-val').textContent = $('signal-rounds').value;
+  $('signal-bots-val').textContent = $('signal-bots').value;
+}
+
 function syncTrialsLabels() {
   const p = parseInt($('trial-prob').value, 10);
   $('trial-prob-val').textContent = `${p}%`;
@@ -235,6 +267,9 @@ $('num-bots').addEventListener('input', syncBotsVisibility);
 $('bot-sims').addEventListener('input', syncBotSimsLabel);
 $('mm-mode').addEventListener('change', syncBotsVisibility);
 $('solo-mode').addEventListener('change', syncSoloVisibility);
+$('signal-mode').addEventListener('change', syncSignalVisibility);
+$('signal-rounds').addEventListener('input', syncSignalLabels);
+$('signal-bots').addEventListener('input', syncSignalLabels);
 $('trial-prob').addEventListener('input', syncTrialsLabels);
 $('series-mode').addEventListener('change', syncTrialsLabels);
 $('success-target').addEventListener('input', syncTrialsLabels);
@@ -277,6 +312,9 @@ function applySettings() {
     marketMaking: $('mm-mode').checked,
     abstractMode: $('abstract-mode').checked,
     soloMM: $('solo-mode').checked,
+    signalMode: $('signal-mode').checked,
+    signalRounds: parseInt($('signal-rounds').value, 10),
+    signalBots: parseInt($('signal-bots').value, 10),
     numBots: parseInt($('num-bots').value, 10),
     botSims: parseInt($('bot-sims').value, 10),
     roundDuration: parseInt($('round-duration').value, 10),
@@ -508,6 +546,14 @@ $('claim-host-btn').addEventListener('click', () => socket.emit('claimHost'));
 $('buy-btn').addEventListener('click', () => sendTrade('buy'));
 $('sell-btn').addEventListener('click', () => sendTrade('sell'));
 
+// Signal mode: six fixed buttons (buy/sell × 1/2/3). No price field — the fill is
+// always the revealed card's value — so the only decision is side and size.
+document.querySelectorAll('.sig-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    socket.emit('trade', { side: btn.dataset.side, qty: parseInt(btn.dataset.qty, 10) });
+  });
+});
+
 // currentMM holds the active market for this round (null if none).
 let currentMM = null;
 let isMMMode = false;
@@ -598,7 +644,9 @@ socket.on('state', ({ game, players, trades, lastPrice, mm, orderBook, roundEnds
   gameInProgress = game.round > 0 && !game.settled;
   $('start-btn').textContent = gameInProgress ? 'Join Game' : 'Start Game';
 
+  applySignalLayout(game);
   renderContract(game);
+  if (game.signalMode) renderSignal(game, players);
   renderPlayers(players);
   renderTape(trades);
   renderMMBanner(mm);
@@ -623,7 +671,10 @@ socket.on('state', ({ game, players, trades, lastPrice, mm, orderBook, roundEnds
   $('next-round-btn').disabled = settled;
   $('next-round-btn').textContent = settled ? 'Settled' : 'Next Round ▶';
 
-  if (isMMMode) {
+  if (game.signalMode) {
+    // Signal mode uses its own trade panel (applySignalLayout hides the ticket and
+    // the book), so none of the market-mode button/overlay wiring below applies.
+  } else if (isMMMode) {
     $('buy-btn').textContent = 'BUY';
     $('sell-btn').textContent = 'SELL';
     $('order-book').classList.add('hidden');
@@ -773,6 +824,212 @@ function renderContract(game) {
     $('bot-hint-reveal').classList.add('hidden');
     $('pnl-recap').classList.add('hidden');
   }
+}
+
+// ---------- Signal Reading mode ----------
+
+// Toggle the whole UI between market mode and signal mode. Signal mode has no
+// order book, no market-maker banner and no price input, so those are hidden
+// rather than left inert.
+function applySignalLayout(game) {
+  const on = !!game.signalMode;
+  document.body.classList.toggle('signal-mode-active', on);
+  $('signal-trade').classList.toggle('hidden', !on);
+  $('signal-bots-panel').classList.toggle('hidden', !on);
+  // Market-mode furniture that has no meaning here.
+  $('ticket-heading').classList.toggle('hidden', on);
+  document.querySelector('.ticket').classList.toggle('hidden', on);
+  $('your-orders').classList.toggle('hidden', on);
+  if (on) {
+    $('order-book').classList.add('hidden');
+    $('mm-banner').classList.add('hidden');
+  }
+}
+
+function renderSignal(game, players) {
+  const sig = game.signal;
+  if (!sig) return;
+
+  // The tradeable card for this round.
+  const cardEl = $('signal-card');
+  if (sig.currentCard) {
+    cardEl.className = 'signal-card' + (sig.currentCard.red ? ' red' : '');
+    cardEl.innerHTML =
+      `<span class="sc-label">${escapeHtml(sig.currentCard.label)}</span>` +
+      `<span class="sc-value">trades at ${sig.currentValue}</span>`;
+  } else {
+    cardEl.className = 'signal-card';
+    cardEl.textContent = '—';
+  }
+
+  // One trade per round: lock the buttons once taken, or when the game is over.
+  const locked = sig.closed || sig.traded;
+  document.querySelectorAll('.sig-btn').forEach((b) => { b.disabled = locked; });
+  const tradedEl = $('signal-traded');
+  const cur = sig.revealed.length ? sig.revealed[sig.revealed.length - 1] : null;
+  if (sig.closed) {
+    tradedEl.textContent = 'Game over — see the reveal on the left.';
+    tradedEl.className = 'signal-traded';
+  } else if (cur && cur.playerSide) {
+    tradedEl.innerHTML = `You <b class="${cur.playerSide === 'buy' ? 'sig-t-buy' : 'sig-t-sell'}">` +
+      `${cur.playerSide.toUpperCase()} ${cur.playerQty}</b> at ${cur.value}. Waiting for the next round…`;
+    tradedEl.className = 'signal-traded done';
+  } else {
+    tradedEl.textContent = 'Pick a side and a size — or sit this one out.';
+    tradedEl.className = 'signal-traded';
+  }
+
+  // The player's own running sample statistics. This is the honest estimate of
+  // fair value from public information alone, so showing it removes pointless
+  // arithmetic without giving anything away — the inference that matters is what
+  // the BOTS know, not what the mean of the reveals is.
+  const vals = sig.revealed.map((r) => r.value);
+  const statsEl = $('signal-stats');
+  if (vals.length) {
+    const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const sd = vals.length > 1
+      ? Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / (vals.length - 1))
+      : null;
+    // Standard error of the mean: how much the player's own estimate can still move.
+    const se = sd != null ? sd / Math.sqrt(vals.length) : null;
+    const me = players.find((p) => p.id === myId);
+    statsEl.innerHTML =
+      `<div class="sig-stat"><span>Your sample mean</span><b>${mean.toFixed(2)}</b></div>` +
+      `<div class="sig-stat"><span>Cards seen</span><b>${vals.length}</b></div>` +
+      (se != null ? `<div class="sig-stat"><span>± std error</span><b>${se.toFixed(2)}</b></div>` : '') +
+      `<div class="sig-stat"><span>Your position</span><b>${me ? (me.position > 0 ? '+' : '') + me.position : '—'}</b></div>`;
+  } else {
+    statsEl.innerHTML = '';
+  }
+
+  renderSignalBotTape(sig);
+  renderSignalDebrief(sig);
+}
+
+// The bot tape: one row per round, newest first, showing what each bot did. This
+// is the entire information channel, so it has to be readable at a glance —
+// direction by colour, size by the number, and the bot's running position after
+// the trade (which is what gives an inventory-shy bot away).
+function renderSignalBotTape(sig) {
+  const wrap = $('signal-bot-tape');
+  if (!sig.botNames.length) {
+    wrap.innerHTML = '<div class="muted">No bots in this game.</div>';
+    return;
+  }
+  const head = `<div class="sbt-row sbt-head"><span class="sbt-r">#</span>` +
+    `<span class="sbt-c">card</span>` +
+    sig.botNames.map((n) => `<span class="sbt-b">${escapeHtml(n)}</span>`).join('') +
+    `</div>`;
+  const rows = sig.revealed.slice().reverse().map((r, idx) => {
+    const roundNo = sig.revealed.length - idx;
+    const cells = sig.botNames.map((n) => {
+      const a = r.botActions.find((x) => x.name === n);
+      if (!a || !a.qty) return `<span class="sbt-b sbt-pass">·</span>`;
+      const cls = a.side === 'buy' ? 'sbt-buy' : 'sbt-sell';
+      const arrow = a.side === 'buy' ? '▲' : '▼';
+      // `pos` is the bot's position AFTER this trade — the inventory trail.
+      return `<span class="sbt-b ${cls}">${arrow}${a.qty}` +
+        `<i class="sbt-pos">${a.position > 0 ? '+' : ''}${a.position}</i></span>`;
+    }).join('');
+    const mine = r.playerSide
+      ? `<i class="sbt-mine ${r.playerSide === 'buy' ? 'sbt-buy' : 'sbt-sell'}">you ${r.playerSide === 'buy' ? '▲' : '▼'}${r.playerQty}</i>`
+      : '';
+    return `<div class="sbt-row"><span class="sbt-r">${roundNo}</span>` +
+      `<span class="sbt-c${r.card?.red ? ' red' : ''}">${r.value}</span>${cells}${mine}</div>`;
+  }).join('');
+  wrap.innerHTML = head + rows +
+    `<div class="sbt-note">▲ buy, ▼ sell, · passed. The small number is that bot's position after the trade.</div>`;
+}
+
+// The end-of-game reveal. Three things, in order of how much they teach:
+//   1. The true distribution vs the sample you actually saw.
+//   2. Your PnL split into edge (knowable at the time) and luck (not).
+//   3. Every bot's hidden traits, and the verdict on whether trusting it paid.
+function renderSignalDebrief(sig) {
+  const el = $('signal-debrief');
+  if (!sig.closed || !sig.debrief) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  const d = sig.debrief;
+
+  const maxP = Math.max(...d.dist.probs);
+  const bars = d.dist.values.map((v, i) => {
+    const p = d.dist.probs[i];
+    return `<div class="sd-cell"><div class="sd-v">${v}</div>` +
+      `<div class="sd-bar"><div class="sd-fill" style="height:${Math.round((p / maxP) * 100)}%"></div></div>` +
+      `<div class="sd-p">${(p * 100).toFixed(0)}%</div></div>`;
+  }).join('');
+
+  // Edge vs luck. The sign of each half is what the player should read: positive
+  // edge with negative PnL means good decisions, bad draws.
+  const edgeGood = d.totalEdge >= 0;
+  const luckGood = d.variance >= 0;
+  const verdict = edgeGood
+    ? (luckGood ? 'You read it well and the cards went your way.'
+                : 'You read it well — the cards just went against you. Same decisions, different draw, and this is a win.')
+    : (luckGood ? 'The result flattered you: your positions were against the evidence available at the time.'
+                : 'Both the reads and the draws went against you.');
+
+  const botRows = d.botReport.map((b) => {
+    const traits = [
+      b.biased ? 'biased' : 'unbiased',
+      b.noisy ? 'incoherent' : 'coherent',
+      b.opaque ? 'opaque sizing' : 'readable sizing',
+      b.invAverse ? 'inventory-shy' : 'no inventory limit',
+    ];
+    const worth = b.rightWhenDisagreeing == null
+      ? '<span class="muted">never disagreed with your running mean</span>'
+      : (b.rightWhenDisagreeing >= 50
+          ? `<span class="sd-good">worth following — right ${b.rightWhenDisagreeing}% of the times it disagreed with your own mean</span>`
+          : `<span class="sd-bad">not worth following — right only ${b.rightWhenDisagreeing}% of the times it disagreed with your own mean</span>`);
+    return `<div class="sd-bot">
+      <div class="sd-bot-head"><b>${escapeHtml(b.name)}</b>
+        <span class="sd-traits">${traits.map((t) => `<i>${t}</i>`).join('')}</span></div>
+      <div class="sd-bot-body">
+        <div class="sd-kv"><span>Saw</span><b>${b.k} private cards</b></div>
+        <div class="sd-kv"><span>Its fair estimate</span><b>${b.muBot}</b>
+          <i class="${Math.abs(b.muError) < 0.5 ? 'sd-good' : 'sd-bad'}">${b.muError > 0 ? '+' : ''}${b.muError} vs truth</i></div>
+        <div class="sd-kv"><span>Looked coherent</span><b>${b.coherence == null ? '—' : b.coherence + '%'}</b>
+          <i class="muted">of its trades fit one threshold</i></div>
+        <div class="sd-kv"><span>Ended at</span><b>${b.finalPosition > 0 ? '+' : ''}${b.finalPosition}</b></div>
+        <div class="sd-kv sd-kv-wide">${worth}</div>
+      </div></div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="sd-head">The Reveal</div>
+    <div class="sd-block">
+      <div class="sd-sub">The hidden distribution <i>(${escapeHtml(d.dist.shape)})</i></div>
+      <div class="sd-grid">${bars}</div>
+      <div class="sd-truth">
+        <div class="sd-kv"><span>True mean (fair value)</span><b>${d.trueMean}</b></div>
+        <div class="sd-kv"><span>Mean of what you saw</span><b>${d.sampleMean}</b></div>
+        <div class="sd-kv"><span>Settled at</span><b>${d.settlement}</b></div>
+      </div>
+      <div class="sd-note">Fair value was the true mean. Your sample mean is what the reveals suggested — the gap between them is how misleading your sample was, before any decision you made.</div>
+    </div>
+    <div class="sd-block">
+      <div class="sd-sub">Edge vs luck</div>
+      <div class="sd-split">
+        <div class="sd-half ${edgeGood ? 'sd-good-bg' : 'sd-bad-bg'}">
+          <div class="sd-half-v">${d.totalEdge > 0 ? '+' : ''}${d.totalEdge}</div>
+          <div class="sd-half-l">EDGE<br><i>decisions the evidence supported at the time</i></div>
+        </div>
+        <div class="sd-half ${luckGood ? 'sd-good-bg' : 'sd-bad-bg'}">
+          <div class="sd-half-v">${d.variance > 0 ? '+' : ''}${d.variance}</div>
+          <div class="sd-half-l">LUCK<br><i>the part that wasn't knowable</i></div>
+        </div>
+        <div class="sd-half sd-total">
+          <div class="sd-half-v">${d.totalPnl > 0 ? '+' : ''}${d.totalPnl}</div>
+          <div class="sd-half-l">TOTAL PnL<br><i>edge + luck</i></div>
+        </div>
+      </div>
+      <div class="sd-verdict">${verdict}</div>
+      <div class="sd-note">Each round is scored against the running mean of the cards revealed <b>up to that point</b> — the best estimate you could have had then, not the answer you have now.</div>
+    </div>
+    <div class="sd-block">
+      <div class="sd-sub">The bots</div>
+      ${botRows || '<div class="muted">No bots in this game.</div>'}
+    </div>`;
 }
 
 // The wacky abstract distribution panel: the value→probability table plus the

@@ -608,10 +608,23 @@ export function normalizeSettings(s = {}) {
   // the quote interface each round — so neither is a pre-game setting any more.
   const soloMM = !!s.soloMM;
 
+  // Signal Reading mode: a self-contained single-player inference game (see
+  // signal.js). The underlying distribution is HIDDEN, the player trades against
+  // the house at the revealed card's value, and the bots are pure signal. It
+  // overrides the asset class, contract, and trading model entirely, so the only
+  // other setting it reads is signalBots (and its own round count).
+  const signalMode = !!s.signalMode;
+  let signalBots = parseInt(s.signalBots, 10);
+  if (!Number.isFinite(signalBots)) signalBots = 3;
+  signalBots = Math.max(0, Math.min(6, signalBots));
+  let signalRounds = parseInt(s.signalRounds, 10);
+  if (!Number.isFinite(signalRounds)) signalRounds = 25;
+  signalRounds = Math.max(5, Math.min(60, signalRounds));
+
   return {
     assetClass: classKey, abstractMode, numAssets, numRounds, privatePerPlayer, numBots, contractId,
     trialProb, seriesMode, successTarget, poissonRate, botSims, tickSize,
-    soloMM,
+    soloMM, signalMode, signalBots, signalRounds,
   };
 }
 
@@ -621,6 +634,7 @@ export function defaultSettings() {
     contractId: null, roundDuration: 60, positionLimit: 10,
     trialProb: 0.6, seriesMode: false, successTarget: 4, poissonRate: 3, botSims: 500,
     tickSize: 0.01, soloMM: false,
+    signalMode: false, signalBots: 3, signalRounds: 25,
   };
 }
 

@@ -6,6 +6,10 @@
   --text: #e6edf3;
   --muted: #8b97a8;
   --accent: #2f81f7;
+  /* Signal Reading mode's own accent — violet, to separate it from the blue
+     market modes at a glance. */
+  --signal: #8a5cf6;
+  --signal-bright: #c4a2ff;
   --green: #2ea043;
   --red: #da3633;
   --gold: #d8a33b;
@@ -349,6 +353,29 @@ main {
 .toggle-title { display: block; font-size: 14px; font-weight: 600; color: var(--text); }
 .toggle-desc { display: block; font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.4; }
 
+/* ---------- Signal Reading mode ----------
+   Signal mode is a different game from the two market modes (no order book, no
+   maker, bots are read rather than traded against), so it gets its own violet
+   accent everywhere it appears — the toggle, the trade panel and the debrief —
+   to keep it visually separate from the blue market modes. */
+.signal-toggle {
+  border-color: var(--signal);
+  background: linear-gradient(180deg, rgba(167, 108, 255, 0.10), rgba(167, 108, 255, 0.03));
+}
+.signal-toggle input[type="checkbox"] { accent-color: var(--signal); }
+.signal-toggle .toggle-title { color: var(--signal-bright); }
+.mode-tag {
+  display: inline-block; margin-left: 6px; padding: 1px 7px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--signal-bright); background: rgba(167, 108, 255, 0.16);
+  border: 1px solid var(--signal); border-radius: 999px; vertical-align: 1px;
+}
+#signal-settings {
+  border-left: 2px solid var(--signal);
+  padding-left: 12px; margin: 10px 0 4px;
+}
+#signal-settings input[type="range"] { accent-color: var(--signal); }
+
 /* ---------- MM overlays (transparent backdrop — game stays visible) ---------- */
 .mm-overlay {
   background: rgba(5, 8, 14, 0.55);
@@ -481,3 +508,145 @@ main {
 .your-orders { font-size: 12px; color: var(--gold); min-height: 16px; margin-top: 6px; }
 
 .hidden { display: none !important; }
+
+/* ---------- Signal Reading mode: game UI ----------
+   Violet throughout, matching the settings toggle, so the mode reads as its own
+   game rather than a variant of the market modes. */
+
+/* The round's tradeable card. Big, because it's the single number every decision
+   keys off. */
+.signal-card {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  background: var(--panel2); border: 1px solid var(--signal);
+  border-radius: 10px; padding: 14px 10px; margin-bottom: 10px;
+}
+.signal-card .sc-label { font-size: 40px; font-weight: 700; line-height: 1.05; color: var(--text); }
+.signal-card.red .sc-label { color: #ff6b81; }
+.signal-card .sc-value { font-size: 12px; color: var(--muted); }
+.signal-note { font-size: 12px; color: var(--muted); line-height: 1.45; margin-bottom: 12px; }
+.signal-note b { color: var(--text); }
+
+.signal-size-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.sig-btn {
+  flex: 1; padding: 11px 0; border-radius: 8px; border: 1px solid var(--border);
+  font-size: 13px; font-weight: 700; letter-spacing: 0.02em;
+  color: #fff; cursor: pointer; transition: filter 0.12s, opacity 0.12s;
+}
+.sig-btn:hover:not(:disabled) { filter: brightness(1.18); }
+.sig-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.sig-buy { background: #1a7f4b; border-color: #23a862; }
+.sig-sell { background: #a32c3c; border-color: #cc3a4d; }
+
+.signal-traded { font-size: 12px; color: var(--muted); margin: 10px 0 0; min-height: 17px; }
+.signal-traded.done { color: var(--text); }
+.sig-t-buy { color: #4ade80; }
+.sig-t-sell { color: #ff7b8a; }
+
+/* The player's own running statistics — public information, shown so the mode is
+   about inference rather than mental arithmetic. */
+.signal-stats {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px;
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);
+}
+.sig-stat { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+.sig-stat b { color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* ---------- Bot tape ---------- */
+.signal-bots-panel { margin-bottom: 22px; }
+.signal-bot-tape { font-size: 12px; max-height: 340px; overflow-y: auto; }
+.sbt-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 4px; border-bottom: 1px solid rgba(42, 51, 67, 0.5);
+}
+.sbt-head {
+  color: var(--muted); font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.05em; border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; background: var(--panel); z-index: 1;
+}
+.sbt-r { width: 20px; color: var(--muted); text-align: right; flex-shrink: 0; }
+.sbt-c {
+  width: 26px; text-align: center; font-weight: 700; flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.sbt-c.red { color: #ff6b81; }
+.sbt-b {
+  flex: 1; min-width: 0; text-align: center; font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.sbt-buy { color: #4ade80; }
+.sbt-sell { color: #ff7b8a; }
+.sbt-pass { color: #3d4757; }
+/* The bot's position after the trade — the trail that gives an inventory-shy bot
+   away, so it's visible but subordinate to the trade itself. */
+.sbt-pos { font-size: 9px; color: var(--muted); font-style: normal; margin-left: 2px; }
+.sbt-mine { font-size: 10px; font-style: normal; flex-shrink: 0; }
+.sbt-note { font-size: 10px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+
+/* ---------- The debrief ---------- */
+.signal-debrief {
+  margin-top: 18px; border: 1px solid var(--signal); border-radius: 10px;
+  background: linear-gradient(180deg, rgba(167, 108, 255, 0.07), rgba(167, 108, 255, 0.02));
+  padding: 14px;
+}
+.sd-head {
+  font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--signal-bright); margin-bottom: 12px;
+}
+.sd-block { margin-bottom: 18px; }
+.sd-block:last-child { margin-bottom: 0; }
+.sd-sub { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+.sd-sub i { color: var(--muted); font-weight: 400; }
+
+/* True distribution bars. */
+.sd-grid { display: flex; align-items: flex-end; gap: 3px; margin-bottom: 10px; }
+.sd-cell { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.sd-v { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.sd-bar { width: 100%; height: 54px; display: flex; align-items: flex-end; background: rgba(255,255,255,0.03); border-radius: 3px; }
+.sd-fill { width: 100%; background: var(--signal); border-radius: 3px; min-height: 2px; }
+.sd-p { font-size: 9px; color: var(--muted); }
+
+.sd-truth { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 4px 14px; }
+.sd-kv { display: flex; align-items: baseline; gap: 6px; font-size: 12px; color: var(--muted); }
+.sd-kv span { flex: 1; }
+.sd-kv b { color: var(--text); font-variant-numeric: tabular-nums; }
+.sd-kv i { font-style: normal; font-size: 11px; }
+.sd-kv-wide { grid-column: 1 / -1; }
+.sd-note { font-size: 11px; color: var(--muted); line-height: 1.5; margin-top: 8px; }
+.sd-note b { color: var(--text); }
+.sd-good { color: #4ade80; }
+.sd-bad { color: #ff7b8a; }
+
+/* Edge vs luck. Three tiles: the decomposition is the point of the debrief, so it
+   gets the most visual weight. */
+.sd-split { display: flex; gap: 8px; }
+.sd-half {
+  flex: 1; border-radius: 8px; padding: 10px 8px; text-align: center;
+  border: 1px solid var(--border); background: var(--panel2);
+}
+.sd-half-v { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); }
+.sd-half-l { font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-top: 4px; line-height: 1.4; }
+.sd-half-l i { text-transform: none; letter-spacing: 0; font-style: normal; font-size: 10px; }
+.sd-good-bg { border-color: rgba(74, 222, 128, 0.45); background: rgba(74, 222, 128, 0.08); }
+.sd-bad-bg { border-color: rgba(255, 123, 138, 0.45); background: rgba(255, 123, 138, 0.08); }
+.sd-total { border-color: var(--signal); background: rgba(167, 108, 255, 0.08); }
+.sd-verdict { font-size: 12px; color: var(--text); margin-top: 10px; line-height: 1.5; }
+
+/* Per-bot reveal. */
+.sd-bot {
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px; margin-bottom: 8px; background: var(--panel2);
+}
+.sd-bot-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.sd-bot-head b { font-size: 13px; }
+.sd-traits { display: flex; flex-wrap: wrap; gap: 4px; }
+.sd-traits i {
+  font-style: normal; font-size: 10px; padding: 1px 6px; border-radius: 999px;
+  background: rgba(167, 108, 255, 0.14); color: var(--signal-bright);
+  border: 1px solid rgba(167, 108, 255, 0.3);
+}
+.sd-bot-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 3px 14px; }
+
+@media (max-width: 720px) {
+  .sd-split { flex-direction: column; }
+  .signal-stats { grid-template-columns: 1fr; }
+}
