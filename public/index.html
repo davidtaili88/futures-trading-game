@@ -131,7 +131,7 @@
         <input type="checkbox" id="signal-mode" />
         <label for="signal-mode" class="toggle-label">
           <span class="toggle-title">Signal Reading <span class="mode-tag">single player</span></span>
-          <span class="toggle-desc">The card distribution is <b>hidden</b>. Each round a card is revealed and you may buy or sell 1–3 lots of it <b>against the house</b> at its face value. The contract settles to one fresh card from the same hidden distribution — so fair value is the distribution's mean, which you must infer. Bots trade publicly alongside you but you never trade against them: they are pure <b>signal</b>. Each bot has a private sample of the deck you never see, plus independently-flipped hidden traits (biased or not, coherent or not, readable size or not, inventory-shy or not). Work out which bots are worth following. Everything is revealed at the end, with your PnL split into <b>edge</b> and <b>luck</b>.</span>
+          <span class="toggle-desc">The distribution of values is <b>hidden</b> — its shape, its spread, and even the range it runs over, all of which change every game. Each round one value is revealed and you may buy or sell 1–3 lots of it <b>against the house</b>; the house widens the price as you size up. The contract settles to one fresh draw from the same hidden distribution, so fair value is its mean, which you must infer. Bots trade publicly alongside you but you never trade against them: they are pure <b>signal</b>. Each bot holds a private sample you never see, plus independently-flipped hidden traits (biased or not, coherent or not, readable size or not, inventory-shy or not). Work out which are worth following. Everything is revealed at the end, with your PnL split into <b>edge</b> and <b>luck</b>.</span>
         </label>
       </div>
 
@@ -140,7 +140,7 @@
           Rounds: <b id="signal-rounds-val">25</b>
         </label>
         <input id="signal-rounds" type="range" min="5" max="60" step="1" value="25" />
-        <p class="hint-text">One card revealed per round. More rounds = your own running mean gets sharper, so the bots' private information matters less late on.</p>
+        <p class="hint-text">One value revealed per round. More rounds = your own running mean gets sharper, so the bots' private information matters less late on.</p>
 
         <label class="field-label" for="signal-bots">
           Signal bots: <b id="signal-bots-val">3</b>
@@ -276,14 +276,16 @@
     <section class="panel">
       <div id="mm-banner" class="mm-banner hidden"></div>
 
-      <!-- Signal mode: trade the revealed card against the house. Direction and
-           size only — the price is the card's face value. -->
+      <!-- Signal mode: trade the revealed value against the house. Direction and
+           size only — the base price is the value itself, plus the house spread. -->
       <div id="signal-trade" class="signal-trade hidden">
-        <h2>This Round's Card</h2>
+        <h2>This Round's Value</h2>
         <div id="signal-card" class="signal-card">—</div>
         <div id="signal-trade-note" class="signal-note">
           Buy if you think the hidden distribution's mean is <b>above</b> this, sell if <b>below</b>.
-          You settle against one fresh card from that distribution.
+          You settle against one fresh draw from that distribution.
+          The house widens the price as you size up, so bigger positions need a bigger edge —
+          and passing is often correct.
         </div>
         <div class="signal-size-row">
           <button class="sig-btn sig-buy" data-side="buy" data-qty="1">BUY 1</button>
@@ -294,6 +296,9 @@
           <button class="sig-btn sig-sell" data-side="sell" data-qty="1">SELL 1</button>
           <button class="sig-btn sig-sell" data-side="sell" data-qty="2">SELL 2</button>
           <button class="sig-btn sig-sell" data-side="sell" data-qty="3">SELL 3</button>
+        </div>
+        <div class="signal-size-row">
+          <button class="sig-btn sig-pass" data-side="pass" data-qty="0">NO TRADE — PASS THIS ROUND</button>
         </div>
         <div id="signal-traded" class="signal-traded"></div>
         <div id="signal-stats" class="signal-stats"></div>

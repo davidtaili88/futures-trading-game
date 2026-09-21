@@ -4,7 +4,7 @@ import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { newGame, revealedForRound, normalizeSettings, defaultSettings, assetClassInfo, contractInfo, drawPrivateAssets, computeSettlement, stripHintForClient, rollHintByTier, estimateFair, seriesDecidedRound } from './game.js';
-import { rollHiddenDist, sampleHidden, makeCard, spawnSignalBots, botAct, buildSignalDebrief } from './signal.js';
+import { rollHiddenDist, sampleHidden, makeCard, spawnSignalBots, botAct, buildSignalDebrief, fillPrice, feeSchedule } from './signal.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1060,6 +1060,12 @@ function signalPublic(room) {
     currentValue: sig.rounds.length ? sig.rounds[sig.rounds.length - 1].cardValue : null,
     traded: sig.rounds.length ? sig.rounds[sig.rounds.length - 1].playerSide != null : false,
     botNames: sig.bots.map((b) => b.name),
+    // The fee schedule is public — the player must be able to see what a given
+    // size will cost before committing to it. It is scaled to this game's spread,
+    // which is why it is sent rather than hardcoded client-side. Sending the
+    // resolved numbers leaks nothing about the distribution beyond its rough
+    // scale, which the revealed values already make obvious.
+    houseFee: feeSchedule(sig.dist),
     settlement: closed ? sig.settlement : null,
     debrief: closed ? sig.debrief : null,
   };
@@ -1645,12 +1651,22 @@ io.on('connection', (socket) => {
     // Signal mode: fill against the HOUSE at the revealed card's value. One trade
     // per round, max 3 lots — the decision is direction and size, not price.
     if (room.settings.signalMode) {
-      if (side !== 'buy' && side !== 'sell') return;
+      // 'pass' is a real, recorded decision, not the absence of one: sitting out a
+      // round when nothing looks mispriced is the correct play often enough that
+      // the debrief needs to distinguish it from simply not having acted yet.
+      if (side !== 'buy' && side !== 'sell' && side !== 'pass') return;
       const sig = room.signal;
       if (!sig || !sig.rounds.length) return;
       const cur = sig.rounds[sig.rounds.length - 1];
       if (cur.playerSide != null) {
-        socket.emit('tradeError', 'You have already traded this round.');
+        socket.emit('tradeError', 'You have already acted this round.');
+        return;
+      }
+      if (side === 'pass') {
+        cur.playerSide = 'pass';
+        cur.playerQty = 0;
+        syncPlayerByName(room, socket.id);
+        broadcast(roomId);
         return;
       }
       qty = Math.max(1, Math.min(3, parseInt(qty, 10) || 0));
@@ -1660,7 +1676,8 @@ io.on('connection', (socket) => {
         socket.emit('tradeError', `Position limit (±${cap}) reached — your position is ${p.position > 0 ? '+' : ''}${p.position}.`);
         return;
       }
-      const price = cur.cardValue;
+      // The house charges a size-dependent spread: bigger size, worse price.
+      const price = fillPrice(cur.cardValue, side, qty, sig.dist);
       cur.playerSide = side;
       cur.playerQty = qty;
       p.position += signedDelta;

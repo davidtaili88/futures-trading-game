@@ -30,16 +30,79 @@ at the true value. Highest PnL wins.
 A single-player game about **inference**, not market making. Turn it on with the violet
 toggle in the settings panel; it overrides the asset class, contract and trading model.
 
-Each round one card (A=1…K=13) is drawn from a **hidden** distribution and revealed. You
-may buy or sell **1–3 lots against the house** at that card's face value, or sit the round
-out — one trade per round. After the last round the contract settles to **one fresh card
-from the same hidden distribution**.
+Each round one **value** is drawn from a **hidden** distribution and revealed. You may buy
+or sell **1–3 lots against the house**, or press **No Trade** to pass — one action per round.
+After the last round the contract settles to **one fresh draw from the same hidden
+distribution**.
+
+Nothing about the distribution is disclosed while you play: not its shape, not its spread,
+and not even the range of values it runs over. The range is itself rolled per game — a
+window roughly 100 wide, placed anywhere from about 10 to 400 — so you cannot anchor on a
+fixed scale and must infer the level as well as the shape. The window is bounded on purpose:
+an unbounded range would let one freak draw hundreds of units away decide the entire game,
+which is variance masquerading as difficulty.
 
 That settlement rule is what gives the mode its spine: because the settlement draw comes
 from the same distribution as the reveals, **fair value is the distribution's mean**, and
-every card you see is a sample of it. A position of `q` lots bought at `c` pays
-`(settlement − c) · q`, so your edge on a buy is `trueMean − c` — a quantity you must
-estimate and never get told during the game.
+every value you see is a sample of it. A position of `q` lots bought at fill price `p` pays
+`(settlement − p) · q`, so your edge on a buy is `trueMean − p` — a quantity you must
+estimate and are never told.
+
+The house charges a spread that widens with size, scaled to each game's own spread (so it
+stays proportionate whatever window was rolled). The fee applies to every lot in the trade,
+which makes the cost of size super-linear.
+
+### Why the distributions are shaped the way they are
+
+The distributions are **adversarial by construction**, built so that "buy anything below the
+middle of what I've seen, sell anything above it" is not a winning strategy. Six shapes —
+`tailUp`, `tailDown`, `multimodal`, `cliff`, `scatter`, `plateau` — weighted toward the tail
+shapes, because those are the ones that actually break a rank-based read: measured as
+(observed range midpoint − true mean) / sd, the tail shapes displace the naive proxy by about
+**1.15 sd** and do it consistently in one direction, while the symmetric shapes manage only
+0.23–0.47.
+
+Three properties are enforced on every distribution:
+
+- **The bounds are unknowable.** The support has gaps, and both ends are feathered so the
+  outermost values are individually very unlikely. Over 25 draws a player hits the exact true
+  minimum in about **6%** of games (it was 45% before feathering) and the true maximum in
+  **3%**; the observed range typically falls ~10 short at each end.
+- **A surprise is always possible.** Whatever side the mass sits on, a thin band of mass is
+  guaranteed on the far side, so a high-concentrated distribution can still print a
+  substantially lower value. This is applied *after* the gap-punching, so feathering cannot
+  erase it.
+- **Genuine multimodality and skew.** Several shapes place 2–4 separated modes with large
+  weight ratios, so the sample looks like it is centring on one level while the mean sits
+  elsewhere.
+
+Support averages ~69 distinct values with ~14 seen per 25-round game, so a game is never two
+values repeating — the point of moving off a 13-card deck.
+
+### Making the uninformed player lose
+
+There is a limit to what distribution shape alone can do, and it is worth stating plainly:
+**no iid distribution can make "trade toward the centre" unprofitable**, because that rule is
+a noisy version of the correct one and so is positive-EV against any distribution. Skew
+reduces its edge but never flips it negative.
+
+The house spread is what closes that hole. It is calibrated against the measured edge
+distribution — a typical `|value − trueMean|` is about 0.82 sd — at **0.55 / 0.90 / 1.30 sd**
+for 1 / 2 / 3 lots. That is the level at which the uninformed stop winning while the informed
+still do:
+
+| Strategy | Avg edge | Games won |
+| --- | --- | --- |
+| **Uninformed**: rank-based, always size 3 | −962 | 0% |
+| **Uninformed**: rank-based, sized by conviction | −202 | 22% |
+| **Uninformed**: rank-based, always size 1 | +36 | 64% |
+| **Informed**: running mean, always size 3 | −887 | 0% |
+| **Informed**: running mean, sized by conviction | +140 | 92% |
+| **Informed**: running mean, patient | **+183** | **98%** |
+
+Blind max-sizing is wiped out, rank-based play is at best a coin flip, and only estimating
+the mean and sizing to conviction reliably wins. Raising the fee further starts taxing good
+play too, so this is the point where the uninformed lose and the informed still win.
 
 ### The bots are signal, not counterparties
 
@@ -54,7 +117,7 @@ Every bot's traits are **independent coin flips**, fixed at spawn for the whole 
 
 | Trait | Heads | Tails |
 | --- | --- | --- |
-| Bias | saw 12 private cards — near-unbiased | saw 3 — badly biased, but plausibly so |
+| Bias | saw 12 private draws — near-unbiased | saw 3 — badly biased, but plausibly so |
 | Coherence | low belief noise: near-fixed threshold | high noise: contradicts itself |
 | Sizing | readable — size tracks perceived edge | opaque — size says little about edge |
 | Inventory | trades freely | inventory-shy: sizes down when long |
@@ -77,10 +140,17 @@ sample you actually saw, and every bot's traits, private sample size and estimat
 
 The part that matters most is the **edge vs luck** split. Each round is re-scored against
 the running mean of the cards revealed *up to that point* — the best estimate available at
-the time, not the answer you have afterwards. Edge is the PnL your decisions earned given
-what was knowable; luck is the remainder, and the two always sum to your realised PnL. A
-positive-edge, negative-PnL game means you played well and the cards went against you,
-which is precisely the outcome a naive scoreboard would punish you for.
+the time, not the answer you have afterwards — and against the price you actually paid, so
+the house spread is charged to your edge rather than hidden. Edge is the PnL your decisions
+earned given what was knowable; luck is the remainder, and the two always sum to your
+realised PnL. A positive-edge, negative-PnL game means you played well and the cards went
+against you, which is precisely the outcome a naive scoreboard would punish you for.
+
+The reveal also shows the true **median** beside the mean, the true range of values against
+the range you actually saw, and how much mass sat on the far side of the mode — so you can
+see the size of the trap you were trading against, what you paid the house in spread, and how
+your **passes** scored — the edge you declined on the rounds you sat out, after fees. Negative means passing
+was the right call; positive means you were too timid.
 
 Settings: **rounds** (5–60, default 25) and **signal bots** (0–6, default 3). Note that more
 bots makes the game *easier*, not harder — several independent noisy estimates average out.

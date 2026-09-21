@@ -850,32 +850,50 @@ function renderSignal(game, players) {
   const sig = game.signal;
   if (!sig) return;
 
-  // The tradeable card for this round.
+  // The tradeable value for this round.
   const cardEl = $('signal-card');
   if (sig.currentCard) {
-    cardEl.className = 'signal-card' + (sig.currentCard.red ? ' red' : '');
+    cardEl.className = 'signal-card';
     cardEl.innerHTML =
       `<span class="sc-label">${escapeHtml(sig.currentCard.label)}</span>` +
-      `<span class="sc-value">trades at ${sig.currentValue}</span>`;
+      `<span class="sc-value">base price — the house spread is added on top</span>`;
   } else {
     cardEl.className = 'signal-card';
     cardEl.textContent = '—';
   }
 
-  // One trade per round: lock the buttons once taken, or when the game is over.
+  // One action per round: lock the buttons once taken, or when the game is over.
   const locked = sig.closed || sig.traded;
-  document.querySelectorAll('.sig-btn').forEach((b) => { b.disabled = locked; });
+  // Label each button with the price it would actually fill at, so the cost of
+  // sizing up is visible BEFORE committing rather than only in the debrief.
+  const fee = sig.houseFee ?? [0, 0, 0, 0];
+  document.querySelectorAll('.sig-btn').forEach((b) => {
+    b.disabled = locked;
+    const side = b.dataset.side;
+    const qty = parseInt(b.dataset.qty, 10);
+    if (side === 'pass' || !qty) return;
+    if (sig.currentValue == null) { b.textContent = `${side.toUpperCase()} ${qty}`; return; }
+    const px = side === 'buy' ? sig.currentValue + (fee[qty] ?? 0) : sig.currentValue - (fee[qty] ?? 0);
+    b.innerHTML = `${side.toUpperCase()} ${qty}<i class="sig-px">@ ${px.toFixed(2)}</i>`;
+  });
   const tradedEl = $('signal-traded');
   const cur = sig.revealed.length ? sig.revealed[sig.revealed.length - 1] : null;
   if (sig.closed) {
     tradedEl.textContent = 'Game over — see the reveal on the left.';
     tradedEl.className = 'signal-traded';
+  } else if (cur && cur.playerSide === 'pass') {
+    tradedEl.innerHTML = `You <b class="sig-t-pass">PASSED</b> this round. Waiting for the next…`;
+    tradedEl.className = 'signal-traded done';
   } else if (cur && cur.playerSide) {
+    const paid = cur.playerSide === 'buy'
+      ? cur.value + (fee[cur.playerQty] ?? 0)
+      : cur.value - (fee[cur.playerQty] ?? 0);
     tradedEl.innerHTML = `You <b class="${cur.playerSide === 'buy' ? 'sig-t-buy' : 'sig-t-sell'}">` +
-      `${cur.playerSide.toUpperCase()} ${cur.playerQty}</b> at ${cur.value}. Waiting for the next round…`;
+      `${cur.playerSide.toUpperCase()} ${cur.playerQty}</b> at ${paid.toFixed(2)}` +
+      `${(fee[cur.playerQty] ?? 0) > 0 ? ` <i class="sig-fee">(value ${cur.value}, house ${fee[cur.playerQty].toFixed(2)}/lot)</i>` : ''}. Waiting for the next round…`;
     tradedEl.className = 'signal-traded done';
   } else {
-    tradedEl.textContent = 'Pick a side and a size — or sit this one out.';
+    tradedEl.textContent = 'Pick a side and a size — or pass.';
     tradedEl.className = 'signal-traded';
   }
 
@@ -895,8 +913,10 @@ function renderSignal(game, players) {
     const me = players.find((p) => p.id === myId);
     statsEl.innerHTML =
       `<div class="sig-stat"><span>Your sample mean</span><b>${mean.toFixed(2)}</b></div>` +
-      `<div class="sig-stat"><span>Cards seen</span><b>${vals.length}</b></div>` +
       (se != null ? `<div class="sig-stat"><span>± std error</span><b>${se.toFixed(2)}</b></div>` : '') +
+      `<div class="sig-stat"><span>Values seen</span><b>${vals.length}</b></div>` +
+      (sd != null ? `<div class="sig-stat"><span>Sample spread</span><b>${sd.toFixed(1)}</b></div>` : '') +
+      `<div class="sig-stat"><span>Seen so far</span><b>${Math.min(...vals)} – ${Math.max(...vals)}</b></div>` +
       `<div class="sig-stat"><span>Your position</span><b>${me ? (me.position > 0 ? '+' : '') + me.position : '—'}</b></div>`;
   } else {
     statsEl.innerHTML = '';
@@ -917,7 +937,7 @@ function renderSignalBotTape(sig) {
     return;
   }
   const head = `<div class="sbt-row sbt-head"><span class="sbt-r">#</span>` +
-    `<span class="sbt-c">card</span>` +
+    `<span class="sbt-c">value</span>` +
     sig.botNames.map((n) => `<span class="sbt-b">${escapeHtml(n)}</span>`).join('') +
     `</div>`;
   const rows = sig.revealed.slice().reverse().map((r, idx) => {
@@ -931,11 +951,13 @@ function renderSignalBotTape(sig) {
       return `<span class="sbt-b ${cls}">${arrow}${a.qty}` +
         `<i class="sbt-pos">${a.position > 0 ? '+' : ''}${a.position}</i></span>`;
     }).join('');
-    const mine = r.playerSide
-      ? `<i class="sbt-mine ${r.playerSide === 'buy' ? 'sbt-buy' : 'sbt-sell'}">you ${r.playerSide === 'buy' ? '▲' : '▼'}${r.playerQty}</i>`
-      : '';
+    const mine = r.playerSide === 'pass'
+      ? `<i class="sbt-mine sbt-pass">you —</i>`
+      : (r.playerSide
+          ? `<i class="sbt-mine ${r.playerSide === 'buy' ? 'sbt-buy' : 'sbt-sell'}">you ${r.playerSide === 'buy' ? '▲' : '▼'}${r.playerQty}</i>`
+          : '');
     return `<div class="sbt-row"><span class="sbt-r">${roundNo}</span>` +
-      `<span class="sbt-c${r.card?.red ? ' red' : ''}">${r.value}</span>${cells}${mine}</div>`;
+      `<span class="sbt-c">${r.value}</span>${cells}${mine}</div>`;
   }).join('');
   wrap.innerHTML = head + rows +
     `<div class="sbt-note">▲ buy, ▼ sell, · passed. The small number is that bot's position after the trade.</div>`;
@@ -964,8 +986,8 @@ function renderSignalDebrief(sig) {
   const edgeGood = d.totalEdge >= 0;
   const luckGood = d.variance >= 0;
   const verdict = edgeGood
-    ? (luckGood ? 'You read it well and the cards went your way.'
-                : 'You read it well — the cards just went against you. Same decisions, different draw, and this is a win.')
+    ? (luckGood ? 'You read it well and the draws went your way.'
+                : 'You read it well — the draws just went against you. Same decisions, different sample, and this is a win.')
     : (luckGood ? 'The result flattered you: your positions were against the evidence available at the time.'
                 : 'Both the reads and the draws went against you.');
 
@@ -985,7 +1007,7 @@ function renderSignalDebrief(sig) {
       <div class="sd-bot-head"><b>${escapeHtml(b.name)}</b>
         <span class="sd-traits">${traits.map((t) => `<i>${t}</i>`).join('')}</span></div>
       <div class="sd-bot-body">
-        <div class="sd-kv"><span>Saw</span><b>${b.k} private cards</b></div>
+        <div class="sd-kv"><span>Saw</span><b>${b.k} private draws</b></div>
         <div class="sd-kv"><span>Its fair estimate</span><b>${b.muBot}</b>
           <i class="${Math.abs(b.muError) < 0.5 ? 'sd-good' : 'sd-bad'}">${b.muError > 0 ? '+' : ''}${b.muError} vs truth</i></div>
         <div class="sd-kv"><span>Looked coherent</span><b>${b.coherence == null ? '—' : b.coherence + '%'}</b>
@@ -1002,10 +1024,23 @@ function renderSignalDebrief(sig) {
       <div class="sd-grid">${bars}</div>
       <div class="sd-truth">
         <div class="sd-kv"><span>True mean (fair value)</span><b>${d.trueMean}</b></div>
+        <div class="sd-kv"><span>True median</span><b>${d.dist.median}</b></div>
         <div class="sd-kv"><span>Mean of what you saw</span><b>${d.sampleMean}</b></div>
         <div class="sd-kv"><span>Settled at</span><b>${d.settlement}</b></div>
       </div>
-      <div class="sd-note">Fair value was the true mean. Your sample mean is what the reveals suggested — the gap between them is how misleading your sample was, before any decision you made.</div>
+      <div class="sd-note">Fair value was the true <b>mean</b>. The <b>median</b> is where the values looked centred — the gap of
+        <b>${Math.abs(Math.round((d.trueMean - d.dist.median) * 100) / 100)}</b> between them is the trap: a player who bought
+        anything below the middle of what they saw was systematically trading against the tail. Your sample mean is what the
+        reveals actually suggested, so the gap from the true mean is how misleading your sample was before any decision you made.</div>
+      <div class="sd-truth sd-bounds">
+        <div class="sd-kv"><span>True range of values</span><b>${d.dist.values[0]} – ${d.dist.values[d.dist.values.length - 1]}</b></div>
+        <div class="sd-kv"><span>Range you actually saw</span><b>${d.seenMin} – ${d.seenMax}</b></div>
+        <div class="sd-kv"><span>Distinct values possible</span><b>${d.dist.values.length}</b>
+          <i class="muted">you saw ${d.seenDistinct}</i></div>
+      </div>
+      <div class="sd-note">The range was rolled at random for this game and never shown — the support has gaps and its ends sit
+        off the window edges, so the highest and lowest values you saw were never evidence of the real bounds. Mass on the far
+        side of the mode was <b>${(d.dist.oppTailMass * 100).toFixed(1)}%</b>: a surprise in the other direction was always live.</div>
     </div>
     <div class="sd-block">
       <div class="sd-sub">Edge vs luck</div>
@@ -1024,7 +1059,18 @@ function renderSignalDebrief(sig) {
         </div>
       </div>
       <div class="sd-verdict">${verdict}</div>
-      <div class="sd-note">Each round is scored against the running mean of the cards revealed <b>up to that point</b> — the best estimate you could have had then, not the answer you have now.</div>
+      <div class="sd-costs">
+        <div class="sd-kv"><span>Paid to the house in spread</span><b>${d.totalFees}</b>
+          <i class="muted">across ${d.perRound.filter((r) => r.qty > 0).length} trades</i></div>
+        <div class="sd-kv"><span>Rounds passed</span><b>${d.passes}</b>
+          <i class="${d.passedEdge > 0 ? 'sd-bad' : 'sd-good'}">${d.passedEdge > 0
+            ? `left ${d.passedEdge} on the table`
+            : `saved ${Math.abs(d.passedEdge)} by sitting out`}</i></div>
+      </div>
+      <div class="sd-note">Each round is scored against the running mean of the cards revealed <b>up to that point</b> — the
+        best estimate you could have had then, not the answer you have now — and against the price you actually paid, so the
+        house spread is charged to your edge rather than hidden. Passing is scored too: the figure above is the edge on one lot
+        in the supported direction, after fees, summed over the rounds you sat out.</div>
     </div>
     <div class="sd-block">
       <div class="sd-sub">The bots</div>
