@@ -60,6 +60,7 @@ socket.on('config', ({ assetClasses: classes, contracts: ctrs, current, gameInPr
   $('signal-mode').checked = !!current.signalMode;
   if (current.signalRounds != null) $('signal-rounds').value = current.signalRounds;
   if (current.signalBots != null) $('signal-bots').value = current.signalBots;
+  if (current.signalBooks != null) $('signal-books').value = current.signalBooks;
   $('round-duration').value = current.roundDuration ?? 60;
   $('position-limit').value = current.positionLimit ?? 10;
   $('num-bots').value = current.numBots ?? 0;
@@ -86,12 +87,18 @@ socket.on('config', ({ assetClasses: classes, contracts: ctrs, current, gameInPr
 function renderAssetClassButtons() {
   const group = $('asset-class-group');
   group.innerHTML = '';
+  const signalOn = $('signal-mode').checked;
   for (const c of assetClasses) {
     const b = document.createElement('button');
-    b.className = 'seg-btn' + (c.key === chosenClass ? ' active' : '');
+    b.className = 'seg-btn' + (!signalOn && c.key === chosenClass ? ' active' : '');
     b.dataset.key = c.key;
     b.textContent = c.label;
     b.addEventListener('click', () => {
+      // Picking a real asset class leaves signal mode.
+      if ($('signal-mode').checked) {
+        $('signal-mode').checked = false;
+        syncSignalVisibility();
+      }
       chosenClass = c.key;
       const slider = $('num-assets');
       slider.max = c.maxAssets;
@@ -102,6 +109,22 @@ function renderAssetClassButtons() {
     });
     group.appendChild(b);
   }
+  // Signal Reading sits in the same row, to the right of the real asset classes.
+  // It isn't an asset class — it swaps the whole game mode — so it carries its
+  // own violet styling and drives the mode checkbox rather than `chosenClass`.
+  const sb = document.createElement('button');
+  sb.className = 'seg-btn seg-signal' + (signalOn ? ' active' : '');
+  sb.dataset.key = 'signal';
+  sb.textContent = 'Signal';
+  sb.title = 'Signal Reading — a single-player inference game against hidden distributions';
+  sb.addEventListener('click', () => {
+    const box = $('signal-mode');
+    box.checked = !box.checked;
+    syncSignalVisibility();
+    renderAssetClassButtons();
+  });
+  group.appendChild(sb);
+
   const cls = assetClasses.find((c) => c.key === chosenClass);
   if (cls) $('num-assets').max = cls.maxAssets;
 }
@@ -236,6 +259,12 @@ function syncSignalVisibility() {
 function syncSignalLabels() {
   $('signal-rounds-val').textContent = $('signal-rounds').value;
   $('signal-bots-val').textContent = $('signal-bots').value;
+  const books = parseInt($('signal-books').value, 10);
+  const bots = parseInt($('signal-bots').value, 10);
+  $('signal-books-val').textContent = books;
+  $('signal-books-note').textContent = books === 1
+    ? 'One market. All your attention on a single distribution.'
+    : `${books} independent markets side by side, each with its own hidden distribution, its own ${bots} bot${bots === 1 ? '' : 's'} and its own settlement. They share nothing — the challenge is splitting your attention, not extra difficulty in any one book.`;
 }
 
 function syncTrialsLabels() {
@@ -267,9 +296,10 @@ $('num-bots').addEventListener('input', syncBotsVisibility);
 $('bot-sims').addEventListener('input', syncBotSimsLabel);
 $('mm-mode').addEventListener('change', syncBotsVisibility);
 $('solo-mode').addEventListener('change', syncSoloVisibility);
-$('signal-mode').addEventListener('change', syncSignalVisibility);
+$('signal-mode').addEventListener('change', () => { syncSignalVisibility(); renderAssetClassButtons(); });
 $('signal-rounds').addEventListener('input', syncSignalLabels);
 $('signal-bots').addEventListener('input', syncSignalLabels);
+$('signal-books').addEventListener('input', syncSignalLabels);
 $('trial-prob').addEventListener('input', syncTrialsLabels);
 $('series-mode').addEventListener('change', syncTrialsLabels);
 $('success-target').addEventListener('input', syncTrialsLabels);
@@ -315,6 +345,7 @@ function applySettings() {
     signalMode: $('signal-mode').checked,
     signalRounds: parseInt($('signal-rounds').value, 10),
     signalBots: parseInt($('signal-bots').value, 10),
+    signalBooks: parseInt($('signal-books').value, 10),
     numBots: parseInt($('num-bots').value, 10),
     botSims: parseInt($('bot-sims').value, 10),
     roundDuration: parseInt($('round-duration').value, 10),
@@ -546,13 +577,8 @@ $('claim-host-btn').addEventListener('click', () => socket.emit('claimHost'));
 $('buy-btn').addEventListener('click', () => sendTrade('buy'));
 $('sell-btn').addEventListener('click', () => sendTrade('sell'));
 
-// Signal mode: six fixed buttons (buy/sell × 1/2/3). No price field — the fill is
-// always the revealed card's value — so the only decision is side and size.
-document.querySelectorAll('.sig-btn').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    socket.emit('trade', { side: btn.dataset.side, qty: parseInt(btn.dataset.qty, 10) });
-  });
-});
+// Signal-mode buttons are built per book by renderSignal, which wires its own
+// click handlers (each action must name the book it belongs to).
 
 // currentMM holds the active market for this round (null if none).
 let currentMM = null;
@@ -835,7 +861,6 @@ function applySignalLayout(game) {
   const on = !!game.signalMode;
   document.body.classList.toggle('signal-mode-active', on);
   $('signal-trade').classList.toggle('hidden', !on);
-  $('signal-bots-panel').classList.toggle('hidden', !on);
   // Market-mode furniture that has no meaning here.
   $('ticket-heading').classList.toggle('hidden', on);
   document.querySelector('.ticket').classList.toggle('hidden', on);
@@ -846,108 +871,134 @@ function applySignalLayout(game) {
   }
 }
 
+// Build one self-contained card per book. Books are independent markets, so each
+// gets its own value, its own buttons, its own running statistics and its own
+// bot tape — nothing about one book may be mistakable for another.
 function renderSignal(game, players) {
   const sig = game.signal;
   if (!sig) return;
+  const multi = sig.numBooks > 1;
+  $('signal-heading').textContent = multi
+    ? `This Round — ${sig.numBooks} independent markets`
+    : "This Round's Value";
 
-  // The tradeable value for this round.
-  const cardEl = $('signal-card');
-  if (sig.currentCard) {
-    cardEl.className = 'signal-card';
-    cardEl.innerHTML =
-      `<span class="sc-label">${escapeHtml(sig.currentCard.label)}</span>` +
-      `<span class="sc-value">base price — the house spread is added on top</span>`;
-  } else {
-    cardEl.className = 'signal-card';
-    cardEl.textContent = '—';
-  }
+  const me = players.find((p) => p.id === myId);
+  const wrap = $('signal-book-list');
+  wrap.innerHTML = '';
 
-  // One action per round: lock the buttons once taken, or when the game is over.
-  const locked = sig.closed || sig.traded;
-  // Label each button with the price it would actually fill at, so the cost of
-  // sizing up is visible BEFORE committing rather than only in the debrief.
-  const fee = sig.houseFee ?? [0, 0, 0, 0];
-  document.querySelectorAll('.sig-btn').forEach((b) => {
-    b.disabled = locked;
-    const side = b.dataset.side;
-    const qty = parseInt(b.dataset.qty, 10);
-    if (side === 'pass' || !qty) return;
-    if (sig.currentValue == null) { b.textContent = `${side.toUpperCase()} ${qty}`; return; }
-    const px = side === 'buy' ? sig.currentValue + (fee[qty] ?? 0) : sig.currentValue - (fee[qty] ?? 0);
-    b.innerHTML = `${side.toUpperCase()} ${qty}<i class="sig-px">@ ${px.toFixed(2)}</i>`;
+  sig.books.forEach((book) => {
+    const card = document.createElement('div');
+    card.className = 'signal-book' + (multi ? ' multi' : '');
+    const fee = book.houseFee ?? [0, 0, 0, 0];
+    const vals = book.revealed.map((r) => r.value);
+    const cur = book.revealed.length ? book.revealed[book.revealed.length - 1] : null;
+    const locked = sig.closed || book.traded;
+
+    // Per-book position, read from the aggregate player entry's book breakdown.
+    const bookPos = (me?.signalPositions ?? [])[book.idx] ?? 0;
+
+    // Header: which book, and where you stand in it.
+    const head = multi
+      ? `<div class="sb-head"><span class="sb-name">${escapeHtml(book.name)}</span>` +
+        `<span class="sb-pos">position <b>${bookPos > 0 ? '+' : ''}${bookPos}</b></span></div>`
+      : '';
+
+    // The tradeable value.
+    const valueBlock = cur
+      ? `<div class="signal-card"><span class="sc-label">${escapeHtml(cur.card.label)}</span>` +
+        `<span class="sc-value">base price — the house spread is added on top</span></div>`
+      : `<div class="signal-card">—</div>`;
+
+    // Buttons, labelled with the price they would actually fill at so the cost
+    // of sizing up is visible BEFORE committing.
+    const mkBtn = (side, qty) => {
+      const px = cur
+        ? (side === 'buy' ? cur.value + (fee[qty] ?? 0) : cur.value - (fee[qty] ?? 0))
+        : null;
+      return `<button class="sig-btn sig-${side}" data-book="${book.idx}" data-side="${side}" data-qty="${qty}"` +
+        `${locked ? ' disabled' : ''}>${side.toUpperCase()} ${qty}` +
+        `${px != null ? `<i class="sig-px">@ ${px.toFixed(2)}</i>` : ''}</button>`;
+    };
+    const buttons =
+      `<div class="signal-size-row">${[1, 2, 3].map((q) => mkBtn('buy', q)).join('')}</div>` +
+      `<div class="signal-size-row">${[1, 2, 3].map((q) => mkBtn('sell', q)).join('')}</div>` +
+      `<div class="signal-size-row"><button class="sig-btn sig-pass" data-book="${book.idx}" data-side="pass" data-qty="0"` +
+      `${locked ? ' disabled' : ''}>NO TRADE — PASS</button></div>`;
+
+    // What you did this round in this book.
+    let traded;
+    if (sig.closed) {
+      traded = `<div class="signal-traded">Settled — see the reveal on the left.</div>`;
+    } else if (cur && cur.playerSide === 'pass') {
+      traded = `<div class="signal-traded done">You <b class="sig-t-pass">PASSED</b> here.</div>`;
+    } else if (cur && cur.playerSide) {
+      const paid = cur.playerSide === 'buy'
+        ? cur.value + (fee[cur.playerQty] ?? 0)
+        : cur.value - (fee[cur.playerQty] ?? 0);
+      traded = `<div class="signal-traded done">You <b class="${cur.playerSide === 'buy' ? 'sig-t-buy' : 'sig-t-sell'}">` +
+        `${cur.playerSide.toUpperCase()} ${cur.playerQty}</b> at ${paid.toFixed(2)}` +
+        `${(fee[cur.playerQty] ?? 0) > 0 ? ` <i class="sig-fee">(value ${cur.value}, house ${fee[cur.playerQty].toFixed(2)}/lot)</i>` : ''}.</div>`;
+    } else {
+      traded = `<div class="signal-traded">Pick a side and a size — or pass.</div>`;
+    }
+
+    // This book's running statistics. Public information, shown so the mode is
+    // about inference rather than mental arithmetic.
+    let stats = '';
+    if (vals.length) {
+      const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+      const sd = vals.length > 1
+        ? Math.sqrt(vals.reduce((t, v) => t + (v - mean) ** 2, 0) / (vals.length - 1))
+        : null;
+      const se = sd != null ? sd / Math.sqrt(vals.length) : null;
+      stats = `<div class="signal-stats">` +
+        `<div class="sig-stat"><span>Sample mean</span><b>${mean.toFixed(2)}</b></div>` +
+        (se != null ? `<div class="sig-stat"><span>± std error</span><b>${se.toFixed(2)}</b></div>` : '') +
+        `<div class="sig-stat"><span>Values seen</span><b>${vals.length}</b></div>` +
+        (sd != null ? `<div class="sig-stat"><span>Sample spread</span><b>${sd.toFixed(1)}</b></div>` : '') +
+        `<div class="sig-stat"><span>Seen so far</span><b>${Math.min(...vals)} – ${Math.max(...vals)}</b></div>` +
+        (multi ? '' : `<div class="sig-stat"><span>Your position</span><b>${bookPos > 0 ? '+' : ''}${bookPos}</b></div>`) +
+        `</div>`;
+    }
+
+    card.innerHTML = head + valueBlock + buttons + traded + stats +
+      `<div class="sb-tape-head">Bot tape</div>` +
+      `<div class="signal-bot-tape">${signalBotTapeHtml(book)}</div>`;
+    wrap.appendChild(card);
   });
-  const tradedEl = $('signal-traded');
-  const cur = sig.revealed.length ? sig.revealed[sig.revealed.length - 1] : null;
-  if (sig.closed) {
-    tradedEl.textContent = 'Game over — see the reveal on the left.';
-    tradedEl.className = 'signal-traded';
-  } else if (cur && cur.playerSide === 'pass') {
-    tradedEl.innerHTML = `You <b class="sig-t-pass">PASSED</b> this round. Waiting for the next…`;
-    tradedEl.className = 'signal-traded done';
-  } else if (cur && cur.playerSide) {
-    const paid = cur.playerSide === 'buy'
-      ? cur.value + (fee[cur.playerQty] ?? 0)
-      : cur.value - (fee[cur.playerQty] ?? 0);
-    tradedEl.innerHTML = `You <b class="${cur.playerSide === 'buy' ? 'sig-t-buy' : 'sig-t-sell'}">` +
-      `${cur.playerSide.toUpperCase()} ${cur.playerQty}</b> at ${paid.toFixed(2)}` +
-      `${(fee[cur.playerQty] ?? 0) > 0 ? ` <i class="sig-fee">(value ${cur.value}, house ${fee[cur.playerQty].toFixed(2)}/lot)</i>` : ''}. Waiting for the next round…`;
-    tradedEl.className = 'signal-traded done';
-  } else {
-    tradedEl.textContent = 'Pick a side and a size — or pass.';
-    tradedEl.className = 'signal-traded';
-  }
 
-  // The player's own running sample statistics. This is the honest estimate of
-  // fair value from public information alone, so showing it removes pointless
-  // arithmetic without giving anything away — the inference that matters is what
-  // the BOTS know, not what the mean of the reveals is.
-  const vals = sig.revealed.map((r) => r.value);
-  const statsEl = $('signal-stats');
-  if (vals.length) {
-    const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
-    const sd = vals.length > 1
-      ? Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / (vals.length - 1))
-      : null;
-    // Standard error of the mean: how much the player's own estimate can still move.
-    const se = sd != null ? sd / Math.sqrt(vals.length) : null;
-    const me = players.find((p) => p.id === myId);
-    statsEl.innerHTML =
-      `<div class="sig-stat"><span>Your sample mean</span><b>${mean.toFixed(2)}</b></div>` +
-      (se != null ? `<div class="sig-stat"><span>± std error</span><b>${se.toFixed(2)}</b></div>` : '') +
-      `<div class="sig-stat"><span>Values seen</span><b>${vals.length}</b></div>` +
-      (sd != null ? `<div class="sig-stat"><span>Sample spread</span><b>${sd.toFixed(1)}</b></div>` : '') +
-      `<div class="sig-stat"><span>Seen so far</span><b>${Math.min(...vals)} – ${Math.max(...vals)}</b></div>` +
-      `<div class="sig-stat"><span>Your position</span><b>${me ? (me.position > 0 ? '+' : '') + me.position : '—'}</b></div>`;
-  } else {
-    statsEl.innerHTML = '';
-  }
+  // One delegated handler for every book's buttons.
+  wrap.querySelectorAll('.sig-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      socket.emit('trade', {
+        side: btn.dataset.side,
+        qty: parseInt(btn.dataset.qty, 10),
+        book: parseInt(btn.dataset.book, 10),
+      });
+    });
+  });
 
-  renderSignalBotTape(sig);
   renderSignalDebrief(sig);
 }
 
-// The bot tape: one row per round, newest first, showing what each bot did. This
-// is the entire information channel, so it has to be readable at a glance —
-// direction by colour, size by the number, and the bot's running position after
-// the trade (which is what gives an inventory-shy bot away).
-function renderSignalBotTape(sig) {
-  const wrap = $('signal-bot-tape');
-  if (!sig.botNames.length) {
-    wrap.innerHTML = '<div class="muted">No bots in this game.</div>';
-    return;
-  }
+// The bot tape for one book: one row per round, newest first. This is the entire
+// information channel, so it has to be readable at a glance — direction by
+// colour, size by the number, and the bot's running position after the trade
+// (which is what gives an inventory-shy bot away).
+function signalBotTapeHtml(book) {
+  if (!book.botNames.length) return '<div class="muted">No bots in this market.</div>';
   const head = `<div class="sbt-row sbt-head"><span class="sbt-r">#</span>` +
     `<span class="sbt-c">value</span>` +
-    sig.botNames.map((n) => `<span class="sbt-b">${escapeHtml(n)}</span>`).join('') +
+    book.botNames.map((n) => `<span class="sbt-b">${escapeHtml(n)}</span>`).join('') +
     `</div>`;
-  const rows = sig.revealed.slice().reverse().map((r, idx) => {
-    const roundNo = sig.revealed.length - idx;
-    const cells = sig.botNames.map((n) => {
+  const rows = book.revealed.slice().reverse().map((r, idx) => {
+    const roundNo = book.revealed.length - idx;
+    const cells = book.botNames.map((n) => {
       const a = r.botActions.find((x) => x.name === n);
       if (!a || !a.qty) return `<span class="sbt-b sbt-pass">·</span>`;
       const cls = a.side === 'buy' ? 'sbt-buy' : 'sbt-sell';
       const arrow = a.side === 'buy' ? '▲' : '▼';
-      // `pos` is the bot's position AFTER this trade — the inventory trail.
+      // `position` is the bot's position AFTER this trade — the inventory trail.
       return `<span class="sbt-b ${cls}">${arrow}${a.qty}` +
         `<i class="sbt-pos">${a.position > 0 ? '+' : ''}${a.position}</i></span>`;
     }).join('');
@@ -959,30 +1010,57 @@ function renderSignalBotTape(sig) {
     return `<div class="sbt-row"><span class="sbt-r">${roundNo}</span>` +
       `<span class="sbt-c">${r.value}</span>${cells}${mine}</div>`;
   }).join('');
-  wrap.innerHTML = head + rows +
+  return head + rows +
     `<div class="sbt-note">▲ buy, ▼ sell, · passed. The small number is that bot's position after the trade.</div>`;
 }
 
-// The end-of-game reveal. Three things, in order of how much they teach:
-//   1. The true distribution vs the sample you actually saw.
-//   2. Your PnL split into edge (knowable at the time) and luck (not).
-//   3. Every bot's hidden traits, and the verdict on whether trusting it paid.
+// The end-of-game reveal: one section per book, plus a combined roll-up when
+// more than one was in play.
 function renderSignalDebrief(sig) {
   const el = $('signal-debrief');
-  if (!sig.closed || !sig.debrief) { el.classList.add('hidden'); return; }
+  if (!sig.closed || !sig.books.some((b) => b.debrief)) { el.classList.add('hidden'); return; }
   el.classList.remove('hidden');
-  const d = sig.debrief;
+  const multi = sig.numBooks > 1;
 
+  // Combined edge/luck across every book, so a multi-book game still answers
+  // "did I play well" in one number.
+  let combined = '';
+  if (multi) {
+    const t = sig.books.reduce((a, b) => {
+      const d = b.debrief;
+      return d ? {
+        edge: a.edge + d.totalEdge, pnl: a.pnl + d.totalPnl,
+        varr: a.varr + d.variance, fees: a.fees + d.totalFees,
+      } : a;
+    }, { edge: 0, pnl: 0, varr: 0, fees: 0 });
+    combined =
+      `<div class="sd-combined"><div class="sd-sub">Across all ${sig.numBooks} markets</div>` +
+      `<div class="sd-split">` +
+      `<div class="sd-half ${t.edge >= 0 ? 'sd-good-bg' : 'sd-bad-bg'}"><div class="sd-half-v">${t.edge > 0 ? '+' : ''}${t.edge.toFixed(1)}</div><div class="sd-half-l">EDGE</div></div>` +
+      `<div class="sd-half ${t.varr >= 0 ? 'sd-good-bg' : 'sd-bad-bg'}"><div class="sd-half-v">${t.varr > 0 ? '+' : ''}${t.varr.toFixed(1)}</div><div class="sd-half-l">LUCK</div></div>` +
+      `<div class="sd-half sd-total"><div class="sd-half-v">${t.pnl > 0 ? '+' : ''}${t.pnl.toFixed(1)}</div><div class="sd-half-l">TOTAL PnL</div></div>` +
+      `</div><div class="sd-note">Paid to the house in spread across all markets: <b>${t.fees.toFixed(1)}</b>. Each market was an entirely separate inference problem — the books shared no information, so doing well in one says nothing about another.</div></div>`;
+  }
+
+  const sections = sig.books.map((book) => {
+    const d = book.debrief;
+    if (!d) return '';
+    return (multi ? `<div class="sd-book-head">${escapeHtml(book.name)}` +
+      `<span class="sd-regime r-${escapeHtml(d.dist.regime ?? 'normal')}">${escapeHtml(d.dist.regime ?? '')}</span></div>` : '') +
+      signalDebriefBody(d, multi);
+  }).join('');
+
+  el.innerHTML = `<div class="sd-head">The Reveal</div>` + combined + sections;
+}
+
+// The debrief for a single book.
+function signalDebriefBody(d, compact) {
   const maxP = Math.max(...d.dist.probs);
   const bars = d.dist.values.map((v, i) => {
     const p = d.dist.probs[i];
-    return `<div class="sd-cell"><div class="sd-v">${v}</div>` +
-      `<div class="sd-bar"><div class="sd-fill" style="height:${Math.round((p / maxP) * 100)}%"></div></div>` +
-      `<div class="sd-p">${(p * 100).toFixed(0)}%</div></div>`;
+    return `<div class="sd-cell"><div class="sd-bar"><div class="sd-fill" style="height:${Math.round((p / maxP) * 100)}%"></div></div></div>`;
   }).join('');
 
-  // Edge vs luck. The sign of each half is what the player should read: positive
-  // edge with negative PnL means good decisions, bad draws.
   const edgeGood = d.totalEdge >= 0;
   const luckGood = d.variance >= 0;
   const verdict = edgeGood
@@ -1009,18 +1087,16 @@ function renderSignalDebrief(sig) {
       <div class="sd-bot-body">
         <div class="sd-kv"><span>Saw</span><b>${b.k} private draws</b></div>
         <div class="sd-kv"><span>Its fair estimate</span><b>${b.muBot}</b>
-          <i class="${Math.abs(b.muError) < 0.5 ? 'sd-good' : 'sd-bad'}">${b.muError > 0 ? '+' : ''}${b.muError} vs truth</i></div>
-        <div class="sd-kv"><span>Looked coherent</span><b>${b.coherence == null ? '—' : b.coherence + '%'}</b>
-          <i class="muted">of its trades fit one threshold</i></div>
+          <i class="${Math.abs(b.muError) < d.trueSd * 0.25 ? 'sd-good' : 'sd-bad'}">${b.muError > 0 ? '+' : ''}${b.muError} vs truth</i></div>
+        <div class="sd-kv"><span>Looked coherent</span><b>${b.coherence == null ? '—' : b.coherence + '%'}</b></div>
         <div class="sd-kv"><span>Ended at</span><b>${b.finalPosition > 0 ? '+' : ''}${b.finalPosition}</b></div>
         <div class="sd-kv sd-kv-wide">${worth}</div>
       </div></div>`;
   }).join('');
 
-  el.innerHTML = `
-    <div class="sd-head">The Reveal</div>
+  return `
     <div class="sd-block">
-      <div class="sd-sub">The hidden distribution <i>(${escapeHtml(d.dist.shape)})</i></div>
+      <div class="sd-sub">The hidden distribution <i>(${escapeHtml(d.dist.shape)}${compact ? '' : `, ${escapeHtml(d.dist.regime ?? '')}`})</i></div>
       <div class="sd-grid">${bars}</div>
       <div class="sd-truth">
         <div class="sd-kv"><span>True mean (fair value)</span><b>${d.trueMean}</b></div>
@@ -1030,17 +1106,16 @@ function renderSignalDebrief(sig) {
       </div>
       <div class="sd-note">Fair value was the true <b>mean</b>. The <b>median</b> is where the values looked centred — the gap of
         <b>${Math.abs(Math.round((d.trueMean - d.dist.median) * 100) / 100)}</b> between them is the trap: a player who bought
-        anything below the middle of what they saw was systematically trading against the tail. Your sample mean is what the
-        reveals actually suggested, so the gap from the true mean is how misleading your sample was before any decision you made.</div>
+        anything below the middle of what they saw was systematically trading against the tail.</div>
       <div class="sd-truth sd-bounds">
         <div class="sd-kv"><span>True range of values</span><b>${d.dist.values[0]} – ${d.dist.values[d.dist.values.length - 1]}</b></div>
         <div class="sd-kv"><span>Range you actually saw</span><b>${d.seenMin} – ${d.seenMax}</b></div>
         <div class="sd-kv"><span>Distinct values possible</span><b>${d.dist.values.length}</b>
           <i class="muted">you saw ${d.seenDistinct}</i></div>
       </div>
-      <div class="sd-note">The range was rolled at random for this game and never shown — the support has gaps and its ends sit
-        off the window edges, so the highest and lowest values you saw were never evidence of the real bounds. Mass on the far
-        side of the mode was <b>${(d.dist.oppTailMass * 100).toFixed(1)}%</b>: a surprise in the other direction was always live.</div>
+      <div class="sd-note">The range was rolled at random and never shown — the support has gaps and its ends sit off the window
+        edges, so the highest and lowest values you saw were never evidence of the real bounds. Mass on the far side of the mode
+        was <b>${(d.dist.oppTailMass * 100).toFixed(1)}%</b>: a surprise in the other direction was always live.</div>
     </div>
     <div class="sd-block">
       <div class="sd-sub">Edge vs luck</div>
@@ -1067,14 +1142,13 @@ function renderSignalDebrief(sig) {
             ? `left ${d.passedEdge} on the table`
             : `saved ${Math.abs(d.passedEdge)} by sitting out`}</i></div>
       </div>
-      <div class="sd-note">Each round is scored against the running mean of the cards revealed <b>up to that point</b> — the
-        best estimate you could have had then, not the answer you have now — and against the price you actually paid, so the
-        house spread is charged to your edge rather than hidden. Passing is scored too: the figure above is the edge on one lot
-        in the supported direction, after fees, summed over the rounds you sat out.</div>
+      <div class="sd-note">Each round is scored against the running mean of the values revealed <b>up to that point</b> — the best
+        estimate you could have had then — and against the price you actually paid, so the house spread is charged to your edge
+        rather than hidden.</div>
     </div>
     <div class="sd-block">
       <div class="sd-sub">The bots</div>
-      ${botRows || '<div class="muted">No bots in this game.</div>'}
+      ${botRows || '<div class="muted">No bots in this market.</div>'}
     </div>`;
 }
 

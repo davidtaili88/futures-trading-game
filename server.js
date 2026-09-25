@@ -432,13 +432,15 @@ function publicGameState(room) {
     const sig = room.signal;
     return {
       contract: room.game.contract,
-      revealedAssets: (sig?.rounds ?? []).map((r) => r.card),
-      revealedCount: sig?.rounds.length ?? 0,
+      // The left-hand asset strip shows book A's reveals; multi-book games get
+      // their own per-book panels instead (see the signal payload).
+      revealedAssets: (sig?.books?.[0]?.rounds ?? []).map((r) => r.card),
+      revealedCount: sig?.rounds ?? 0,
       totalAssets: sig?.numRounds ?? 0,
       round: room.game.round,
       numRounds: sig?.numRounds ?? 0,
       settled: closed,
-      settlement: closed ? sig.settlement : null,
+      settlement: closed ? (sig.books.length === 1 ? sig.books[0].settlement : null) : null,
       marketMaking: false,
       soloMM: false,
       signalMode: true,
@@ -509,6 +511,9 @@ function playerList(room) {
     isMarketMaker: room.mm ? p.id === room.mm.makerId : false,
     isHost: p.id === room.hostId,
     isBot: !!p.isBot,
+    // Signal mode: per-book positions, so each book card can show where the
+    // player stands in that market specifically.
+    signalPositions: p.signalBooks ? p.signalBooks.map((b) => b.position) : null,
   }));
 }
 
@@ -898,9 +903,9 @@ function startSignalGame(roomId, rawSettings) {
   const pl = parseInt(rawSettings.positionLimit, 10);
   room.settings.positionLimit = Number.isFinite(pl) && pl > 0 ? Math.min(pl, 1000) : 30;
 
-  const dist = rollHiddenDist();
   const numRounds = room.settings.signalRounds;
-  const bots = spawnSignalBots(dist, room.settings.signalBots);
+  const numBooks = room.settings.signalBooks;
+  const botsPer = room.settings.signalBots;
 
   // Drop any bots left over from a previous non-signal game: signal bots are not
   // players and must not appear on the leaderboard.
@@ -908,32 +913,63 @@ function startSignalGame(roomId, rawSettings) {
     if (isBot(p)) delete room.players[id];
   }
 
+  // Each BOOK is a fully independent market: its own hidden distribution, its
+  // own bots (the same COUNT per book, but freshly rolled traits), its own
+  // settlement draw and its own position. Every round reveals one value in every
+  // book simultaneously, and the player chooses which book(s) to act in. Books
+  // share nothing, so reading one tells you nothing about another — what they
+  // create is an allocation problem: limited attention across several
+  // independent inference problems, which is much closer to a real desk.
+  const books = [];
+  for (let b = 0; b < numBooks; b++) {
+    const dist = rollHiddenDist();
+    books.push({
+      idx: b,
+      name: `Book ${String.fromCharCode(65 + b)}`,
+      dist,
+      bots: spawnSignalBots(dist, botsPer).map((bot) => ({
+        ...bot,
+        // Namespace bot ids/names per book so two books' Bot-1s never collide.
+        id: `sbot:${b}:${bot.id.split(':').pop()}`,
+        name: `${bot.name}`,
+      })),
+      rounds: [],
+      settlement: sampleHidden(dist),
+      position: 0,
+      cash: 0,
+    });
+  }
+
   room.signal = {
-    dist,
-    bots,
-    rounds: [],
+    books,
+    numBooks,
+    botsPerBook: botsPer,
+    rounds: 0,
     numRounds,
-    settlement: sampleHidden(dist),
     closed: false,
   };
+
   // A minimal game object so the shared plumbing (round counter, broadcast,
   // settlement display) keeps working without special-casing every call site.
   room.game = {
     settings: room.settings,
     contract: {
       id: 'signal_draw',
-      name: 'Next Card (hidden distribution)',
-      description:
-        'Settles to one fresh card drawn from the same hidden distribution as the cards revealed each round. Fair value is the distribution\'s mean — which you must infer from the reveals and from what the bots do.',
-      assetClass: 'cards',
-      assetLabel: 'Cards',
-      unit: 'card',
+      name: numBooks > 1
+        ? `Next Draw — ${numBooks} independent books`
+        : 'Next Draw (hidden distribution)',
+      description: numBooks > 1
+        ? `Each book has its OWN hidden distribution, its own bots and its own settlement. They share nothing — reading one tells you nothing about another. Each settles to one fresh draw from its own distribution; fair value in each is that distribution's mean.`
+        : 'Settles to one fresh draw from the same hidden distribution as the values revealed each round. Fair value is the distribution\'s mean — which you must infer from the reveals and from what the bots do.',
+      assetClass: 'signal',
+      assetLabel: 'Values',
+      unit: 'value',
       numAssets: numRounds,
       numRounds,
       params: {},
     },
     assets: [],
-    settlement: room.signal.settlement,
+    settlement: null,
     hintCards: [],
     round: 1,
   };
@@ -952,6 +988,9 @@ function startSignalGame(roomId, rawSettings) {
     p.position = 0;
     p.privateAssets = [];
     p.hintKey = null;
+    // Per-book positions for this player. The leaderboard position/cash stay as
+    // the aggregate across books.
+    p.signalBooks = books.map(() => ({ position: 0 }));
     room.playersByName[p.name] = { cash: p.cash, position: p.position, hintKey: null, privateAssets: [] };
     io.to(p.id).emit('hints', []);
     io.to(p.id).emit('privateAssets', []);
@@ -963,25 +1002,28 @@ function startSignalGame(roomId, rawSettings) {
   startSignalRoundTimer(roomId);
 }
 
-// Reveal the round's card and let every bot act on it. The bots act BEFORE the
-// player trades, so their behaviour is information the player can actually use
-// this round — that is the whole point of the mode.
+// Reveal this round's value in EVERY book and let that book's bots act on it.
+// The bots act BEFORE the player trades, so their behaviour is information the
+// player can actually use this round — that is the whole point of the mode.
 function signalRevealRound(room) {
   const sig = room.signal;
-  const card = sampleHidden(sig.dist);
-  const botActions = sig.bots.map((b) => {
-    const rec = botAct(b, card);
-    // Only side and size are public. The bot's belief and edge stay server-side
-    // until the debrief.
-    return { name: b.name, side: rec.side, qty: rec.qty, position: b.position };
-  });
-  sig.rounds.push({
-    card: makeCard(card),
-    cardValue: card,
-    botActions,
-    playerSide: null,
-    playerQty: 0,
-  });
+  for (const book of sig.books) {
+    const v = sampleHidden(book.dist);
+    const botActions = book.bots.map((b) => {
+      const rec = botAct(b, v);
+      // Only side and size are public. The bot's belief and edge stay
+      // server-side until the debrief.
+      return { name: b.name, side: rec.side, qty: rec.qty, position: b.position };
+    });
+    book.rounds.push({
+      card: makeCard(v),
+      cardValue: v,
+      botActions,
+      playerSide: null,
+      playerQty: 0,
+    });
+  }
+  sig.rounds = sig.books[0]?.rounds.length ?? 0;
 }
 
 function startSignalRoundTimer(roomId) {
@@ -1001,12 +1043,12 @@ function advanceSignalRound(roomId) {
   if (!room?.signal || room.signal.closed) return;
   clearRoundTimer(room);
   const sig = room.signal;
-  if (sig.rounds.length >= sig.numRounds) {
+  if (sig.rounds >= sig.numRounds) {
     settleSignal(room);
     broadcast(roomId);
     return;
   }
-  room.game.round = sig.rounds.length + 1;
+  room.game.round = sig.rounds + 1;
   signalRevealRound(room);
   broadcast(roomId);
   startSignalRoundTimer(roomId);
@@ -1016,58 +1058,67 @@ function settleSignal(room) {
   const sig = room.signal;
   if (sig.closed) return;
   sig.closed = true;
-  const s = sig.settlement;
-  room.game.settlement = s;
+  // Each book settles independently against its own draw; the player's cash is
+  // the sum across books.
   for (const p of Object.values(room.players)) {
-    p.cash += p.position * s;
+    const perBook = p.signalBooks ?? [];
+    sig.books.forEach((book, i) => {
+      const pos = perBook[i]?.position ?? 0;
+      p.cash += pos * book.settlement;
+      if (perBook[i]) perBook[i].position = 0;
+    });
     p.position = 0;
     syncPlayerByName(room, p.id);
   }
-  sig.debrief = buildSignalDebrief({
-    dist: sig.dist,
-    rounds: sig.rounds.map((r) => ({
+  // One debrief per book, plus a combined edge/luck roll-up.
+  sig.debriefs = sig.books.map((book) => buildSignalDebrief({
+    dist: book.dist,
+    rounds: book.rounds.map((r) => ({
       card: r.cardValue,
       playerSide: r.playerSide,
       playerQty: r.playerQty,
       botActions: r.botActions,
     })),
-    settlement: s,
-    bots: sig.bots,
-  });
+    settlement: book.settlement,
+    bots: book.bots,
+  }));
+  room.game.settlement = sig.books.length === 1 ? sig.books[0].settlement : null;
 }
 
-// Public view of signal state. Everything hidden (the distribution, the bots'
-// parameters, the settlement draw) is withheld until close.
+// Public view of signal state. Everything hidden (each book's distribution, its
+// bots' parameters, its settlement draw) is withheld until close.
 function signalPublic(room) {
   const sig = room.signal;
   if (!sig) return null;
   const closed = sig.closed;
+  const me = null; // per-player position is attached in publicGameState's caller
   return {
     numRounds: sig.numRounds,
-    round: sig.rounds.length,
+    round: sig.rounds,
     closed,
-    // Every card revealed so far, oldest first — the player's sample.
-    revealed: sig.rounds.map((r) => ({
-      round: r.round ?? null,
-      card: r.card,
-      value: r.cardValue,
-      botActions: r.botActions,
-      playerSide: r.playerSide,
-      playerQty: r.playerQty,
+    numBooks: sig.numBooks,
+    botsPerBook: sig.botsPerBook,
+    books: sig.books.map((book, i) => ({
+      idx: i,
+      name: book.name,
+      // Every value revealed so far in this book, oldest first.
+      revealed: book.rounds.map((r) => ({
+        card: r.card,
+        value: r.cardValue,
+        botActions: r.botActions,
+        playerSide: r.playerSide,
+        playerQty: r.playerQty,
+      })),
+      currentCard: book.rounds.length ? book.rounds[book.rounds.length - 1].card : null,
+      currentValue: book.rounds.length ? book.rounds[book.rounds.length - 1].cardValue : null,
+      traded: book.rounds.length ? book.rounds[book.rounds.length - 1].playerSide != null : false,
+      botNames: book.bots.map((b) => b.name),
+      // The fee schedule is public and PER BOOK — it is scaled to that book's
+      // own spread, so the player must be able to see what a size costs there.
+      houseFee: feeSchedule(book.dist),
+      settlement: closed ? book.settlement : null,
+      debrief: closed ? (sig.debriefs?.[i] ?? null) : null,
     })),
-    // The current round's card is the tradeable price.
-    currentCard: sig.rounds.length ? sig.rounds[sig.rounds.length - 1].card : null,
-    currentValue: sig.rounds.length ? sig.rounds[sig.rounds.length - 1].cardValue : null,
-    traded: sig.rounds.length ? sig.rounds[sig.rounds.length - 1].playerSide != null : false,
-    botNames: sig.bots.map((b) => b.name),
-    // The fee schedule is public — the player must be able to see what a given
-    // size will cost before committing to it. It is scaled to this game's spread,
-    // which is why it is sent rather than hardcoded client-side. Sending the
-    // resolved numbers leaks nothing about the distribution beyond its rough
-    // scale, which the revealed values already make obvious.
-    houseFee: feeSchedule(sig.dist),
-    settlement: closed ? sig.settlement : null,
-    debrief: closed ? sig.debrief : null,
   };
 }
 
@@ -1641,7 +1692,7 @@ io.on('connection', (socket) => {
   });
 
   // MM mode: non-maker trades at the fixed bid/ask set by the maker.
-  socket.on('trade', ({ side, qty }) => {
+  socket.on('trade', ({ side, qty, book }) => {
     if (!roomId) return;
     const room = getRoom(roomId);
     const p = room.players[socket.id];
@@ -1656,12 +1707,18 @@ io.on('connection', (socket) => {
       // the debrief needs to distinguish it from simply not having acted yet.
       if (side !== 'buy' && side !== 'sell' && side !== 'pass') return;
       const sig = room.signal;
-      if (!sig || !sig.rounds.length) return;
-      const cur = sig.rounds[sig.rounds.length - 1];
+      if (!sig || !sig.books.length) return;
+      // Which book this action is for. Books are fully independent markets, so
+      // every action names one; a missing index means book 0 (the single-book case).
+      const bi = Math.max(0, Math.min(sig.books.length - 1, parseInt(book, 10) || 0));
+      const bk = sig.books[bi];
+      if (!bk.rounds.length) return;
+      const cur = bk.rounds[bk.rounds.length - 1];
       if (cur.playerSide != null) {
-        socket.emit('tradeError', 'You have already acted this round.');
+        socket.emit('tradeError', `You have already acted in ${bk.name} this round.`);
         return;
       }
+      if (!p.signalBooks) p.signalBooks = sig.books.map(() => ({ position: 0 }));
       if (side === 'pass') {
         cur.playerSide = 'pass';
         cur.playerQty = 0;
@@ -1672,20 +1729,25 @@ io.on('connection', (socket) => {
       qty = Math.max(1, Math.min(3, parseInt(qty, 10) || 0));
       const signedDelta = side === 'buy' ? qty : -qty;
       const cap = positionLimit(room);
-      if (Math.abs(p.position + signedDelta) > cap) {
-        socket.emit('tradeError', `Position limit (±${cap}) reached — your position is ${p.position > 0 ? '+' : ''}${p.position}.`);
+      const bookPos = p.signalBooks[bi]?.position ?? 0;
+      // The position limit applies PER BOOK, so a multi-book game doesn't
+      // silently give the player more total risk than a single-book one per market.
+      if (Math.abs(bookPos + signedDelta) > cap) {
+        socket.emit('tradeError', `Position limit (±${cap}) reached in ${bk.name} — your position there is ${bookPos > 0 ? '+' : ''}${bookPos}.`);
         return;
       }
-      // The house charges a size-dependent spread: bigger size, worse price.
-      const price = fillPrice(cur.cardValue, side, qty, sig.dist);
+      // The house charges a size-dependent spread, scaled to THIS book's spread.
+      const price = fillPrice(cur.cardValue, side, qty, bk.dist);
       cur.playerSide = side;
       cur.playerQty = qty;
-      p.position += signedDelta;
+      p.signalBooks[bi].position = bookPos + signedDelta;
+      p.position = p.signalBooks.reduce((a, b) => a + b.position, 0);
       p.cash -= signedDelta * price;
       room.tradeCount[p.name] = (room.tradeCount[p.name] ?? 0) + 1;
       syncPlayerByName(room, socket.id);
       room.trades.push({
-        round: sig.rounds.length,
+        round: sig.rounds,
+        book: bk.name,
         price,
         qty,
         side,

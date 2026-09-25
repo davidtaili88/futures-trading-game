@@ -27,8 +27,9 @@ at the true value. Highest PnL wins.
 
 ## Signal Reading Mode
 
-A single-player game about **inference**, not market making. Turn it on with the violet
-toggle in the settings panel; it overrides the asset class, contract and trading model.
+A single-player game about **inference**, not market making. Pick **Signal** in the asset-class
+row (to the right of Poisson), or use the violet toggle further down; it overrides the asset
+class, contract and trading model.
 
 Each round one **value** is drawn from a **hidden** distribution and revealed. You may buy
 or sell **1–3 lots against the house**, or press **No Trade** to pass — one action per round.
@@ -36,11 +37,40 @@ After the last round the contract settles to **one fresh draw from the same hidd
 distribution**.
 
 Nothing about the distribution is disclosed while you play: not its shape, not its spread,
-and not even the range of values it runs over. The range is itself rolled per game — a
-window roughly 100 wide, placed anywhere from about 10 to 400 — so you cannot anchor on a
-fixed scale and must infer the level as well as the shape. The window is bounded on purpose:
-an unbounded range would let one freak draw hundreds of units away decide the entire game,
-which is variance masquerading as difficulty.
+and not even the range of values it runs over. You cannot anchor on a fixed scale and must
+infer the level as well as the shape.
+
+Each game also rolls a **volatility regime**, which sets how wide its value window is:
+
+| Regime | Frequency | Typical sd | Character |
+| --- | --- | --- | --- |
+| `tight` | 20% | ~13 | Calm and readable — inference at its cleanest |
+| `normal` | 39% | ~25 | The workhorse |
+| `wide` | 28% | ~48 | A single draw genuinely moves your estimate |
+| `violent` | 13% | ~83 | Rare, and the games you remember |
+
+Spread across games is now about **5.3× from the 10th to the 90th percentile** (it was 1.8×
+when every game came from one window range). The calm regime is deliberately kept — it is
+where inference is cleanest — but it is now a minority, so a quiet game reads as a lull
+rather than the default. The window stays bounded even in the violent regime: an unbounded
+range would let one freak draw decide the entire game, which is variance masquerading as
+difficulty.
+
+Because the house spread scales with each game's own standard deviation, the strategy
+hierarchy is identical in every regime — a violent game is more dramatic, not more winnable.
+
+### Multiple markets
+
+The **Markets in play** setting runs up to four **books** side by side. Each book is a fully
+independent market: its own hidden distribution, its own regime, its own bots (the same
+*count* per book, but freshly rolled traits), its own house spread scaled to its own spread,
+its own settlement draw and its own position limit. They share nothing, so reading one tells
+you nothing about another.
+
+This is an **attention-allocation** dial, not a difficulty one. Every round reveals one value
+in every book at once and you choose where to act; the skill is deciding which markets
+deserve your reads and which to sit out. The debrief scores each book separately and then
+rolls them up into one combined edge/luck split.
 
 That settlement rule is what gives the mode its spine: because the settlement draw comes
 from the same distribution as the reveals, **fair value is the distribution's mean**, and

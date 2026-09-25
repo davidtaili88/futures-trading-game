@@ -6,14 +6,14 @@
 // only role is to leak information about the hidden distribution.
 //
 // Each round:
-//   1. One card is drawn from a HIDDEN distribution over 1..13 and revealed.
-//   2. The bots each act on that card (buy/sell/pass, with a size).
-//   3. The player may buy or sell 1/2/3 lots at the card's value PLUS the house
-//      spread for that size (see HOUSE_FEE), or pass the round entirely.
+//   1. One value is drawn from a HIDDEN distribution and revealed.
+//   2. The bots each act on that value (buy/sell/pass, with a size).
+//   3. The player may buy or sell 1/2/3 lots at the value PLUS the house spread
+//      for that size (see FEE_SD_MULT), or pass the round entirely.
 //
 // At the end, the contract settles to a FRESH draw from the same hidden
-// distribution. So the deck mean IS the fair value, and every revealed card is a
-// sample from the settlement distribution — learning the deck is directly
+// distribution. So the distribution's mean IS the fair value, and every revealed
+// value is a sample from the settlement distribution — learning it is directly
 // profitable.
 //
 // A position of q lots bought at fill price p pays (settlement − p) · q. The
@@ -23,21 +23,43 @@
 
 // ---------- The hidden distribution ----------
 //
-// The value range is itself randomized per game and never disclosed. A game is
-// played over a window roughly 100 wide, placed somewhere in [MIN_FLOOR,
-// MAX_CEIL] — so the player cannot anchor on "values run 1..13" or any other
-// fixed scale, and has to infer the level as well as the shape. Nothing in the
-// UI states the bounds, and the reveal is the first time they are shown.
+// The value range is itself randomized per game and never disclosed. Each game
+// rolls a VOLATILITY REGIME (see REGIMES) that sets how wide its value window is,
+// and the window is then placed somewhere in [MIN_FLOOR, MAX_CEIL] — so the
+// player cannot anchor on any fixed scale, and has to infer the level, the
+// spread and the shape. Nothing in the UI states the bounds, and the reveal is
+// the first time they are shown.
 //
-// The window is bounded deliberately. An unbounded range would let one freak
-// draw hundreds of units away decide the whole game's PnL, which is variance
-// masquerading as difficulty. A ~100-wide window keeps tail events meaningful
-// (a rare low draw against a high-concentrated mean genuinely moves the mean)
-// without letting a single sample swamp 25 rounds of good decisions.
-const WINDOW_MIN = 70;    // narrowest a game's value window can be
-const WINDOW_MAX = 130;   // widest — around the requested ~100
+// The window is still bounded. An unbounded range would let one freak draw
+// decide the whole game's PnL, which is variance masquerading as difficulty.
+// Even the violent regime keeps tail events meaningful without letting a single
+// sample swamp 25 rounds of good decisions.
 const MIN_FLOOR = 10;     // lowest value any game can produce
-const MAX_CEIL = 400;     // highest — so the window can sit high without extremes
+const MAX_CEIL = 900;     // highest — wide regimes need room to sit high
+
+// VOLATILITY REGIMES. Rolling every game from one window range made the mode
+// feel samey: the spread was always about the same fraction of the level, so
+// after a few games you stopped being surprised. Instead each game rolls a
+// regime, which sets how wide the value window is.
+//
+// The tight regime is deliberately KEPT — it is the calm, readable game where
+// inference is cleanest, and removing it would flatten the mode in the other
+// direction. It is just no longer most of the games: it is now a minority, so a
+// calm game reads as a lull rather than the default.
+//
+// `weight` is relative frequency; `min`/`max` bound the window width.
+const REGIMES = [
+  // Calm: the old behaviour, now the minority. Small spreads, obvious level.
+  { name: 'tight',  weight: 1.6, min: 45,  max: 90 },
+  // The workhorse: roughly the previous default.
+  { name: 'normal', weight: 3.0, min: 90,  max: 180 },
+  // Wide: spreads big enough that a single draw genuinely moves your estimate.
+  { name: 'wide',   weight: 2.2, min: 180, max: 340 },
+  // Violent: rare, and the games people remember. A tail draw here can be
+  // hundreds of units from the body — still bounded, so one sample cannot
+  // literally decide the game, but it will hurt.
+  { name: 'violent', weight: 1.0, min: 340, max: 560 },
+];
 
 // Resolution of the value grid. The window is divided into this many discrete
 // steps; values are integers, so a ~100-wide window gives ~100 candidate values.
@@ -87,6 +109,16 @@ const SHAPE_WEIGHTS = {
   tailUp: 3.0, tailDown: 3.0, plateau: 1.6, cliff: 1.0, multimodal: 1.0, scatter: 0.4,
 };
 
+function pickWeightedIdx(weights) {
+  const tot = weights.reduce((a, b) => a + b, 0);
+  let r = Math.random() * tot;
+  for (let i = 0; i < weights.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return i;
+  }
+  return weights.length - 1;
+}
+
 function pickWeighted(keys, weights) {
   const tot = keys.reduce((a, k) => a + (weights[k] ?? 1), 0);
   let r = Math.random() * tot;
@@ -110,13 +142,15 @@ export function rollHiddenDist() {
   // breaks "buy below the middle". The symmetric shapes only manage 0.23–0.47 sd,
   // so they are kept for variety but are no longer the bulk of the games.
   const shape = pickWeighted(shapes, SHAPE_WEIGHTS);
+  // Regime is rolled once per game too, so the whole game shares one character.
+  const regime = REGIMES[pickWeightedIdx(REGIMES.map((r) => r.weight))];
 
   let best = null;
   let bestScore = -1;
   for (let attempt = 0; attempt < 60; attempt++) {
     // Roll this game's value window. Both the width and the placement are random
     // and hidden, so the player must infer the level as well as the shape.
-    const width = WINDOW_MIN + Math.floor(Math.random() * (WINDOW_MAX - WINDOW_MIN + 1));
+    const width = regime.min + Math.floor(Math.random() * (regime.max - regime.min + 1));
     const base = MIN_FLOOR + Math.floor(Math.random() * (MAX_CEIL - width - MIN_FLOOR + 1));
     const span = width + 1;
     let raw = new Array(span).fill(0);
@@ -204,7 +238,7 @@ export function rollHiddenDist() {
     raw = punchGaps(raw, span);
     raw = addOppositeTail(raw, span);
 
-    const cand = finalizeDist(shape, raw, span, base, width);
+    const cand = finalizeDist(shape, raw, span, base, width, regime.name);
     if (!cand) continue;
 
     // Accept only if genuinely adverse AND rich AND both tails live.
@@ -304,7 +338,7 @@ function punchGaps(raw, span) {
 // still be real.
 const PROB_UNITS = 10000;
 
-function finalizeDist(shape, raw, span, base, width) {
+function finalizeDist(shape, raw, span, base, width, regime) {
   const total = raw.reduce((a, b) => a + b, 0);
   if (!(total > 0)) return null;
   const units = raw.map((w) => Math.round((w / total) * PROB_UNITS));
@@ -347,6 +381,7 @@ function finalizeDist(shape, raw, span, base, width) {
 
   return {
     shape,
+    regime,
     values,
     probs,
     mean: Math.round(mean * 1000) / 1000,

@@ -672,3 +672,59 @@ main {
 
 /* Bounds comparison in the debrief — the "you never knew the range" reveal. */
 .sd-bounds { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+
+/* Signal Reading's button in the asset-class row. It isn't an asset class — it
+   swaps the game mode — so it carries the violet accent to read as different. */
+.seg-btn.seg-signal { --seg-color: var(--signal); border-color: rgba(138, 92, 246, 0.5); color: var(--signal-bright); }
+.seg-btn.seg-signal:hover { border-color: var(--signal); }
+.seg-btn.seg-signal.active { background: var(--signal); border-color: var(--signal); color: #fff; }
+
+/* ---------- Multi-book layout ----------
+   Each book is an independent market with its own value, buttons, stats and bot
+   tape. They are stacked as self-contained cards so nothing about one book can
+   be mistaken for another. */
+.signal-books { display: flex; flex-direction: column; gap: 14px; }
+.signal-book {
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel2); padding: 12px;
+}
+.signal-book.multi { border-left: 3px solid var(--signal); }
+.sb-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 8px; margin-bottom: 8px;
+}
+.sb-name { font-size: 13px; font-weight: 700; color: var(--signal-bright); letter-spacing: 0.03em; }
+.sb-pos { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.sb-pos b { color: var(--text); }
+/* Compact value display inside a book card. */
+.signal-book .signal-card { padding: 10px; margin-bottom: 8px; }
+.signal-book .signal-card .sc-label { font-size: 32px; }
+.signal-book .signal-size-row { gap: 6px; margin-bottom: 6px; }
+.signal-book .sig-btn { padding: 8px 0; font-size: 12px; }
+.signal-book .sig-px { font-size: 9px; }
+.signal-book .signal-stats { margin-top: 10px; padding-top: 8px; gap: 4px 10px; }
+.signal-book .signal-bot-tape { max-height: 190px; margin-top: 10px; }
+.sb-tape-head {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--muted); margin: 10px 0 4px;
+}
+/* Debrief: one section per book. */
+.sd-book-head {
+  font-size: 12px; font-weight: 700; color: var(--signal-bright);
+  letter-spacing: 0.04em; margin: 16px 0 8px; padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.sd-book-head:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+.sd-regime {
+  display: inline-block; margin-left: 6px; padding: 1px 7px; font-size: 10px;
+  font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  border-radius: 999px; border: 1px solid var(--border); color: var(--muted);
+}
+.sd-regime.r-tight { color: #6fd39a; border-color: rgba(111,211,154,0.4); }
+.sd-regime.r-normal { color: #79a8f0; border-color: rgba(121,168,240,0.4); }
+.sd-regime.r-wide { color: #e0b15f; border-color: rgba(224,177,95,0.45); }
+.sd-regime.r-violent { color: #ff7b8a; border-color: rgba(255,123,138,0.5); }
+.sd-combined {
+  border: 1px solid var(--signal); border-radius: 8px; padding: 10px;
+  margin-bottom: 14px; background: rgba(138, 92, 246, 0.07);
+}

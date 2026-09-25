@@ -143,10 +143,16 @@
         <p class="hint-text">One value revealed per round. More rounds = your own running mean gets sharper, so the bots' private information matters less late on.</p>
 
         <label class="field-label" for="signal-bots">
-          Signal bots: <b id="signal-bots-val">3</b>
+          Signal bots <span class="muted">per book</span>: <b id="signal-bots-val">3</b>
         </label>
         <input id="signal-bots" type="range" min="0" max="6" step="1" value="3" />
-        <p class="hint-text">Each bot's traits are independent coin flips, fixed for the whole game. Note that <b>more bots makes the game easier</b>, not harder — several independent noisy estimates average out.</p>
+        <p class="hint-text">Each bot's traits are independent coin flips, fixed for the whole game. Every book gets this many bots, rolled separately. Note that <b>more bots makes a book easier</b>, not harder — several independent noisy estimates average out.</p>
+
+        <label class="field-label" for="signal-books">
+          Markets in play: <b id="signal-books-val">1</b>
+        </label>
+        <input id="signal-books" type="range" min="1" max="4" step="1" value="1" />
+        <p class="hint-text" id="signal-books-note">One market. All your attention on a single distribution.</p>
       </div>
 
       <div id="num-bots-row">
@@ -276,32 +282,12 @@
     <section class="panel">
       <div id="mm-banner" class="mm-banner hidden"></div>
 
-      <!-- Signal mode: trade the revealed value against the house. Direction and
-           size only — the base price is the value itself, plus the house spread. -->
+      <!-- Signal mode: one self-contained card per book, built by renderSignal.
+           Each book is an independent market with its own value, buttons, stats
+           and bot tape. -->
       <div id="signal-trade" class="signal-trade hidden">
-        <h2>This Round's Value</h2>
-        <div id="signal-card" class="signal-card">—</div>
-        <div id="signal-trade-note" class="signal-note">
-          Buy if you think the hidden distribution's mean is <b>above</b> this, sell if <b>below</b>.
-          You settle against one fresh draw from that distribution.
-          The house widens the price as you size up, so bigger positions need a bigger edge —
-          and passing is often correct.
-        </div>
-        <div class="signal-size-row">
-          <button class="sig-btn sig-buy" data-side="buy" data-qty="1">BUY 1</button>
-          <button class="sig-btn sig-buy" data-side="buy" data-qty="2">BUY 2</button>
-          <button class="sig-btn sig-buy" data-side="buy" data-qty="3">BUY 3</button>
-        </div>
-        <div class="signal-size-row">
-          <button class="sig-btn sig-sell" data-side="sell" data-qty="1">SELL 1</button>
-          <button class="sig-btn sig-sell" data-side="sell" data-qty="2">SELL 2</button>
-          <button class="sig-btn sig-sell" data-side="sell" data-qty="3">SELL 3</button>
-        </div>
-        <div class="signal-size-row">
-          <button class="sig-btn sig-pass" data-side="pass" data-qty="0">NO TRADE — PASS THIS ROUND</button>
-        </div>
-        <div id="signal-traded" class="signal-traded"></div>
-        <div id="signal-stats" class="signal-stats"></div>
+        <h2 id="signal-heading">This Round</h2>
+        <div id="signal-book-list" class="signal-books"></div>
       </div>
 
       <h2 style="margin-top:24px;" id="ticket-heading">Trade Ticket</h2>
@@ -343,13 +329,6 @@
 
     <!-- Right column: players + trade tape -->
     <section class="panel">
-      <!-- Signal mode: the bot tape. This is the whole information channel —
-           every bot's direction and size each round, and its running position. -->
-      <div id="signal-bots-panel" class="signal-bots-panel hidden">
-        <h2>Bot Tape <span class="muted">what the bots did</span></h2>
-        <div id="signal-bot-tape" class="signal-bot-tape"></div>
-      </div>
-
       <h2>Traders</h2>
       <table class="players">
         <thead><tr><th>Name</th><th>Cash</th><th>Pos</th><th>PnL</th></tr></thead>

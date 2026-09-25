@@ -617,6 +617,13 @@ export function normalizeSettings(s = {}) {
   let signalBots = parseInt(s.signalBots, 10);
   if (!Number.isFinite(signalBots)) signalBots = 3;
   signalBots = Math.max(0, Math.min(6, signalBots));
+  // signalBooks: how many INDEPENDENT distributions run side by side. Each gets
+  // its own bots (the same count per book), its own settlement and its own
+  // position, and they share nothing — so this is an attention-allocation dial,
+  // not a difficulty one.
+  let signalBooks = parseInt(s.signalBooks, 10);
+  if (!Number.isFinite(signalBooks)) signalBooks = 1;
+  signalBooks = Math.max(1, Math.min(4, signalBooks));
   let signalRounds = parseInt(s.signalRounds, 10);
   if (!Number.isFinite(signalRounds)) signalRounds = 25;
   signalRounds = Math.max(5, Math.min(60, signalRounds));
@@ -624,7 +631,7 @@ export function normalizeSettings(s = {}) {
   return {
     assetClass: classKey, abstractMode, numAssets, numRounds, privatePerPlayer, numBots, contractId,
     trialProb, seriesMode, successTarget, poissonRate, botSims, tickSize,
-    soloMM, signalMode, signalBots, signalRounds,
+    soloMM, signalMode, signalBots, signalBooks, signalRounds,
   };
 }
 
@@ -634,7 +641,7 @@ export function defaultSettings() {
     contractId: null, roundDuration: 60, positionLimit: 10,
     trialProb: 0.6, seriesMode: false, successTarget: 4, poissonRate: 3, botSims: 500,
     tickSize: 0.01, soloMM: false,
-    signalMode: false, signalBots: 3, signalRounds: 25,
+    signalMode: false, signalBots: 3, signalBooks: 1, signalRounds: 25,
   };
 }
 
